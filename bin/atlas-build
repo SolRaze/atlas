@@ -28,7 +28,7 @@ DEST = os.environ.get("ATLAS_DEST", "").rstrip("/")
 
 
 def parse_manifest():
-    """-> list of dicts: {id, flags, label, lede, parts[]}."""
+    """-> list of dicts: {id, label, lede, parts[]}."""
     secs = []
     for ln in open(os.path.join(TPL, "sections.manifest")):
         ln = ln.strip()
@@ -37,11 +37,10 @@ def parse_manifest():
         if ln.startswith("=="):
             head, _, rest = ln[2:].partition("|")
             label, _, lede = rest.partition("|")
-            ids = head.split()
+            sid = head.strip()
             secs.append({
-                "id": ids[0],
-                "flags": ids[1:],
-                "label": label.strip() or ids[0],
+                "id": sid,
+                "label": label.strip() or sid,
                 "lede": lede.strip(),
                 "parts": [],
             })
@@ -69,11 +68,10 @@ def render():
                 print(f"WARN missing partial: {name}", file=sys.stderr)
                 continue
             cards.append(open(p).read().rstrip())
-        grid = "grid wide" if "wide" in s["flags"] else "grid"
         lede = f'  <p class="lede">{html.escape(s["lede"])}</p>\n' if s["lede"] else ""
         body.append(
             f'<section id="{s["id"]}" data-label="{html.escape(s["label"])}">\n{lede}'
-            f'  <div class="{grid}">\n' + "\n".join(cards) + "\n  </div>\n</section>"
+            f'  <div class="grid">\n' + "\n".join(cards) + "\n  </div>\n</section>"
         )
 
     # One self-contained file: the css and js are inlined rather than linked,

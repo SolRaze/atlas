@@ -25,14 +25,12 @@ layout
 | `assets/` | `manifest.webmanifest` `icon-*-v2.png` | pushed verbatim beside the page |
 
 manifest
-`== <id> [wide] | <tab label> | <lede>` then one partial per line
-`wide` single-column grid, for full-width tables
+`== <id> | <tab label> | <lede>` then one partial per line
 
 cards
 - `<div class="card">` + `<h2><span>title</span><span class="note">sub</span></h2>` + a `<table>` or `<pre>`
 - `.card.prose` built into a collapsed `<details>` | sorts after live cards | search opens it on a match
-- `.card.span` one wide card across a normal grid
-- `tr.hd` header row | `tr.any` wrapping value | `tr.sep` divider | `table.map` multi-column table
+- `tr.any` wrapping value | `tr.sep` divider
 
 page
 - `/` search | `1`–`9` sections | `esc` clear
