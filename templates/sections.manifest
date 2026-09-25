@@ -1,0 +1,14 @@
+# layout for atlas-build. Order matters — the FIRST section is the homepage.
+#
+#   == <id> [flags] | <Tab label> | <lede shown under the tabs>
+#   <partial>.html            one per line, relative to sections/
+#
+# flags: wide  -> single-column grid (for full-width tables)
+# Comments (#) and blank lines ignored.
+
+== home | home | Every host and what it serves. Links here can be pinned to the rail and open in-page.
+hosts.html
+about.html
+
+== keys wide | keys | Keybinds, one table per app.
+keys.html

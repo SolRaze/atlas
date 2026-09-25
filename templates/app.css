@@ -1,0 +1,375 @@
+  /* monotonal: one neutral hue, distinction by brightness only.
+     No second colour anywhere — links/kbd differ by weight and border, not hue. */
+  :root {
+    --bg:#0e0e10; --panel:#151517; --panel-2:#1b1b1f;
+    --line:#26262b; --line-2:#33333a;
+    --fg:#d6d6d8; --fg-2:#a3a3a8; --mut:#6c6c74; --hi:#f2f2f4;
+    --rail:60px; --radius:10px;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  /* Touch: kill the grey flash and the 300ms click delay Safari still applies
+     to anything it thinks might be double-tapped. Feedback comes from :active
+     rules instead, which fire immediately. */
+  button, a, .qtile, .rail-btn, .sw, .pick, summary {
+      -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+  body { margin:0; background:var(--bg); color:var(--fg); overflow:hidden;
+         font:13.5px/1.55 "JetBrains Mono",ui-monospace,SFMono-Regular,monospace;
+         -webkit-font-smoothing:antialiased; -webkit-text-size-adjust:100%; }
+
+  /* ---- shell: fixed-height flex, so nothing floats or jitters while scrolling ---- */
+  .app { display:flex; height:100dvh;
+         padding-top:env(safe-area-inset-top);
+         padding-bottom:env(safe-area-inset-bottom);
+         padding-left:env(safe-area-inset-left);
+         padding-right:env(safe-area-inset-right);
+         background:var(--bg); }
+
+  /* ---- left rail: tabs ---- */
+  .rail { flex:0 0 var(--rail); display:flex; flex-direction:column; gap:6px;
+          padding:8px 6px;
+          background:var(--panel); border-right:1px solid var(--line);
+          overflow-y:auto; scrollbar-width:none; }
+  .rail::-webkit-scrollbar { display:none; }
+  .rail-btn { flex:0 0 auto; width:48px; background:none; border:0; padding:0;
+              font:inherit; color:var(--fg-2); cursor:pointer; }
+  .rail-btn .glyph { display:flex; align-items:center; justify-content:center;
+      width:46px; height:44px; border-radius:12px; background:var(--bg);
+      border:1px solid var(--line-2); font-size:17px; line-height:1;
+      color:var(--hi); filter:grayscale(1); }
+  .rail-btn .cap { display:block; font-size:8.5px; color:var(--mut);
+      margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .rail-btn.on .glyph { border-color:var(--fg-2); background:var(--panel-2); }
+  .rail-btn.on .cap { color:var(--fg-2); }
+  .rail-btn.live .glyph { box-shadow:inset 2px 0 0 var(--fg-2); }
+  .rail-btn svg { width:22px; height:22px; }
+  .rail-add .glyph { border-style:dashed; color:var(--mut); }
+  .rail-sep { flex:0 0 auto; height:1px; background:var(--line-2); margin:2px 4px; }
+
+  /* ---- views ---- */
+  .main { flex:1; position:relative; min-width:0; }
+  .view { position:absolute; inset:0; display:none; }
+  .view.on { display:flex; flex-direction:column; }
+  /* overscroll-behavior: a rubber-band at the end of this pane must not scroll
+     the page behind it, which on iOS reads as the whole app sliding. */
+  .view.atlas { overflow:auto; overscroll-behavior:contain;
+                -webkit-overflow-scrolling:touch; }
+  .view.atlas.on { display:block; }
+  .frame-bar { flex:0 0 auto; display:flex; align-items:center; gap:8px;
+      padding:8px 10px; border-bottom:1px solid var(--line);
+      background:var(--panel); font-size:12px; color:var(--fg-2); }
+  .frame-bar .url { flex:1; overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; color:var(--mut); font-size:11px; }
+  .frame-bar button, .frame-bar a { background:var(--panel-2); color:var(--fg-2);
+      border:1px solid var(--line); border-radius:7px; padding:4px 9px;
+      font:inherit; font-size:11.5px; cursor:pointer; text-decoration:none; }
+  .frame-wrap { flex:1; position:relative; }
+  iframe { position:absolute; inset:0; width:100%; height:100%; border:0;
+           background:var(--bg); }
+
+  .wrap { max-width:1400px; margin:0 auto;
+          padding:0 max(20px, env(safe-area-inset-right)) 40px 20px; }
+
+  /* ---- atlas header ---- */
+  header { position:sticky; top:0; z-index:10; background:var(--bg);
+           border-bottom:1px solid var(--line); padding:14px 0 0; }
+  .bar { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; color:var(--hi); letter-spacing:.02em; }
+  .sub { color:var(--mut); font-size:11.5px; margin:0; }
+  .search { margin-left:auto; margin-right:8px; position:relative; }
+  .search input { width:260px; background:var(--panel-2); color:var(--fg);
+      border:1px solid var(--line-2); border-radius:var(--radius);
+      padding:6px 30px 6px 11px; font:inherit; font-size:12.5px; outline:none; }
+  .search input:focus { border-color:var(--fg-2); }
+  .search input::placeholder { color:var(--mut); }
+  .search .hint { position:absolute; right:9px; top:50%; transform:translateY(-50%);
+      color:var(--mut); font-size:11px; pointer-events:none; }
+
+  /* ---- section nav ---- */
+  nav#nav { display:flex; gap:4px; margin:14px 0 0; flex-wrap:wrap; }
+  nav#nav button { background:none; border:0; border-bottom:2px solid transparent;
+      color:var(--mut); font:inherit; font-size:12.5px; padding:7px 12px 8px;
+      cursor:pointer; border-radius:6px 6px 0 0; }
+  @media (hover:hover) { nav#nav button:hover { color:var(--fg); background:var(--panel); } }
+  nav#nav button.on { color:var(--hi); border-bottom-color:var(--fg-2); background:var(--panel); }
+  nav#nav button .k { color:var(--mut); font-size:10.5px; margin-right:6px; }
+
+  /* ---- sections / cards ---- */
+  section { display:none; padding-top:20px; }
+  section.on { display:block; }
+  .lede { color:var(--mut); font-size:12px; margin:0 0 16px; max-width:86ch; }
+  .grid { display:grid; gap:14px; align-items:start;
+          grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); }
+  .grid.wide { grid-template-columns:1fr; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:var(--radius); overflow:hidden; }
+  .card > h2, .card > summary > h2 { margin:0; padding:9px 13px; font-size:11.5px; font-weight:600;
+      letter-spacing:.09em; text-transform:uppercase; color:var(--fg-2);
+      background:var(--panel-2); border-bottom:1px solid var(--line);
+      display:flex; justify-content:space-between; gap:12px; }
+  .card > h2 .note, .card > summary > h2 .note { text-transform:none;
+      letter-spacing:0; font-weight:400; color:var(--mut); }
+
+  /* Prose cards ship collapsed and sort after the live ones, so a section
+     opens on its switches. The build turns them into <details>. */
+  .card.prose { order:1; }
+  .card.prose > summary { list-style:none; cursor:pointer; }
+  .card.prose > summary > h2::after { content:"+"; color:var(--mut);
+      font-weight:400; margin-left:auto; padding-left:10px; }
+  .card.prose[open] > summary > h2::after { content:"\2212"; }
+  .card.prose > summary:hover > h2 { color:var(--fg); }
+  /* alone on purpose: a selector list holding a pseudo-element the engine does
+     not know throws away the whole rule */
+  .card.prose > summary::-webkit-details-marker { display:none; }
+  /* a card holding a full-width table, inside an otherwise columnar grid */
+  .card.span { grid-column:1 / -1; }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:5px 13px; border-top:1px solid var(--line); vertical-align:top; }
+  td:first-child { color:var(--fg-2); }
+  td:last-child { text-align:right; color:var(--fg); white-space:normal;
+      overflow-wrap:anywhere; }
+  tr.any td:last-child { white-space:normal; }
+  .card.prose td:first-child { width:32%; }
+  .card.prose td:last-child { text-align:left; white-space:normal; color:var(--fg-2); }
+  tr:first-child td { border-top:0; }
+  tr.sep td { border-top:1px solid var(--line-2); }
+  tr.hd td { color:var(--mut); font-size:10.5px; letter-spacing:.08em;
+      text-transform:uppercase; background:var(--panel-2); }
+  table.map td { text-align:left; white-space:normal; font-size:12.5px; }
+  table.map td:first-child { color:var(--fg); width:26%; }
+  table.map td:nth-child(2) { color:var(--fg-2); width:40%; }
+  table.map td:nth-child(3) { color:var(--mut); width:22%; }
+  table.map td:last-child { color:var(--mut); width:12%; text-align:right; }
+  table.map tr.hd td { color:var(--mut); }
+  table.map tr.hd td:first-child { color:var(--fg); }
+  @media (hover:hover) { tr:hover td { background:var(--panel-2); } }
+  kbd { display:inline-block; background:var(--bg); border:1px solid var(--line-2);
+        border-bottom-width:2px; border-radius:5px; padding:1px 6px;
+        font:inherit; font-size:11.5px; color:var(--hi); }
+  code { color:var(--hi); font-size:12.5px; }
+  em { font-style:normal; color:var(--mut); }
+  a { color:var(--hi); text-decoration:none; border-bottom:1px dotted var(--line-2); }
+  @media (hover:hover) { a:hover { border-bottom-color:var(--fg); } }
+  a:active { border-bottom-color:var(--fg); }
+  pre { margin:0; padding:10px 13px; font-size:12px; line-height:1.7;
+        white-space:pre-wrap; color:var(--fg-2); }
+  pre b { color:var(--hi); font-weight:600; }
+  pre i { color:var(--mut); font-style:normal; }
+
+  /* ---- search state ---- */
+  body.searching section { display:block; }
+  body.searching .lede { display:none; }
+  body.searching section::before { content:attr(data-label); display:block;
+      color:var(--mut); font-size:10.5px; letter-spacing:.09em;
+      text-transform:uppercase; margin:0 0 10px; }
+  body.searching nav#nav button.on { border-bottom-color:transparent; }
+  tr.hide, .card.hide { display:none; }
+  section.hide { display:none !important; }
+  .empty { color:var(--mut); font-size:12px; padding:20px 0; display:none; }
+  body.searching .empty.on { display:block; }
+
+  /* ---- header actions ---- */
+  .hbtn { background:var(--panel-2); color:var(--fg-2); border:1px solid var(--line-2);
+          border-radius:8px; padding:6px 10px; font:inherit; font-size:11.5px;
+          cursor:pointer; }
+  .hbtn:active { border-color:var(--fg); }
+  /* prefs and reload sit in the corner: last in the row on desktop, top-right on phone */
+  .corner { order:9; margin-left:auto; display:flex; gap:6px; }
+  @media (max-width:760px) { .corner { order:1; } }
+
+  /* prefs: body classes hide whole blocks, .off hides one row of a live list.
+     Search overrides noprose so a query still reaches the explainer cards. */
+  body.notiles .tiles-head, body.notiles .tiles { display:none; }
+  body.noprose:not(.searching) .card.prose { display:none; }
+  .ctl-row.off { display:none; }
+  .frame-bar .home { display:none; }
+  .modal .ctl-row { padding-left:0; padding-right:0; }
+
+  /* ---- quick tiles (front page, user-editable) ---- */
+  .tiles-head { display:flex; align-items:center; gap:10px; margin:18px 0 8px; }
+  .tiles-head h2 { margin:0; font-size:11.5px; font-weight:600; letter-spacing:.09em;
+      text-transform:uppercase; color:var(--fg-2); }
+  .tiles { display:grid; gap:10px;
+           grid-template-columns:repeat(auto-fill,minmax(132px,1fr)); }
+  .qtile { display:flex; align-items:center; gap:9px; text-align:left;
+      background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+      padding:10px 11px; font:inherit; color:var(--fg); cursor:pointer; min-width:0; }
+  .qtile:active { border-color:var(--fg-2); }
+  .qtile .g { flex:0 0 auto; width:30px; height:30px; border-radius:9px;
+      background:var(--bg); border:1px solid var(--line-2); display:flex;
+      align-items:center; justify-content:center; font-size:14px; color:var(--hi);
+      filter:grayscale(1); }
+  .qtile .t { min-width:0; }
+  .qtile .t b { display:block; font-weight:500; font-size:12.5px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .qtile .t span { display:block; color:var(--mut); font-size:10.5px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .qtile.add { border-style:dashed; color:var(--mut); justify-content:center; }
+
+  /* ---- live control lists ----
+     Rows rather than a table: every row is a touch target with its switch on
+     the right, and the switch says on/off the way everything else here does —
+     by brightness, never by colour. */
+  .ctl .pad { padding:11px 13px; margin:0; }
+  /* sub-heading inside a card, same weight as a table's tr.hd */
+  .ctl-head { padding:5px 13px; background:var(--panel-2);
+      border-top:1px solid var(--line); color:var(--mut); font-size:10.5px;
+      letter-spacing:.08em; text-transform:uppercase; }
+  .ctl-row { display:flex; align-items:center; gap:9px;
+      padding:7px 13px; border-top:1px solid var(--line); }
+  .ctl-row:first-child { border-top:0; }
+  .ctl-row .n { flex:1; min-width:0; }
+  .ctl-row .n b { display:block; font-weight:500; font-size:12.5px; color:var(--fg);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ctl-row .n span { display:block; color:var(--mut); font-size:10.5px;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ctl-row .v { flex:0 0 auto; color:var(--fg-2); font-size:11.5px;
+      font-variant-numeric:tabular-nums; }
+  .ctl-row.dead .n b, .ctl-row.dead .v { color:var(--mut); }
+  .ctl-row.busy { opacity:.45; }
+  .ctl-row.busy .sw, .ctl-row.busy .ctl-btn { pointer-events:none; }
+  .ctl-btn { flex:0 0 auto; background:var(--panel-2); color:var(--fg-2);
+      border:1px solid var(--line); border-radius:7px; padding:5px 9px;
+      font:inherit; font-size:11px; cursor:pointer; white-space:nowrap; }
+  .ctl-btn:active { border-color:var(--fg); color:var(--hi); }
+
+  .sw { flex:0 0 auto; width:42px; height:24px; padding:2px; border-radius:999px;
+        background:var(--bg); border:1px solid var(--line-2); cursor:pointer;
+        display:flex; align-items:center; }
+  .sw i { display:block; width:18px; height:18px; border-radius:50%;
+      background:var(--mut); transition:transform .13s ease, background .13s ease; }
+  .sw[aria-checked="true"] { border-color:var(--fg-2); background:var(--panel-2); }
+  .sw[aria-checked="true"] i { transform:translateX(18px); background:var(--hi); }
+
+  body.kb .app { padding-bottom:0; }
+
+  footer { color:var(--mut); font-size:11px; margin-top:28px;
+           border-top:1px solid var(--line); padding-top:12px;
+           display:flex; gap:18px; flex-wrap:wrap; }
+
+  /* ---- pin manager ---- */
+  .modal { position:fixed; inset:0; z-index:30; display:none;
+           background:rgba(0,0,0,.6); }
+  .modal.on { display:block; }
+  .modal-card { position:absolute; left:50%; bottom:0; transform:translateX(-50%);
+      width:min(560px,100%); max-height:88dvh; overflow:auto;
+      background:var(--panel); border:1px solid var(--line-2);
+      border-radius:14px 14px 0 0;
+      padding:14px 14px calc(18px + env(safe-area-inset-bottom)); }
+  .modal-card .lede { margin:0 0 10px; }
+  .modal h3 { margin:0 0 10px; font-size:12px; letter-spacing:.09em;
+      text-transform:uppercase; color:var(--fg-2); font-weight:600;
+      display:flex; justify-content:space-between; align-items:center; }
+  .modal h3 button { background:none; border:0; color:var(--mut);
+      font:inherit; font-size:16px; cursor:pointer; padding:0 4px; }
+  .modal .tabs { display:flex; gap:4px; margin-bottom:10px; }
+  .modal .tabs button { flex:1; background:var(--panel-2); border:1px solid var(--line);
+      color:var(--mut); font:inherit; font-size:12px; padding:8px; cursor:pointer;
+      border-radius:8px; }
+  .modal .tabs button.on { color:var(--hi); border-color:var(--fg-2); }
+  .pane { display:none; } .pane.on { display:block; }
+  .pick { display:block; width:100%; text-align:left; background:none;
+      border:0; border-top:1px solid var(--line); color:var(--fg);
+      font:inherit; font-size:12.5px; padding:9px 2px; cursor:pointer; }
+  .pick span { color:var(--mut); font-size:11px; display:block; }
+  .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .row label { flex:0 0 62px; color:var(--mut); font-size:11.5px; }
+  .row input { flex:1; min-width:0; background:var(--panel-2); color:var(--fg);
+      border:1px solid var(--line-2); border-radius:8px; padding:8px 10px;
+      font:inherit; font-size:16px; outline:none; }
+  .row input:focus { border-color:var(--fg-2); }
+  .act { display:flex; gap:8px; margin-top:12px; }
+  .act button { flex:1; background:var(--panel-2); color:var(--hi);
+      border:1px solid var(--line-2); border-radius:8px; padding:10px;
+      font:inherit; font-size:12.5px; cursor:pointer; }
+  .manage { display:flex; align-items:center; gap:8px;
+      border-top:1px solid var(--line); padding:7px 0; font-size:12.5px; }
+  .manage .grow { flex:1; overflow:hidden; text-overflow:ellipsis;
+      white-space:nowrap; color:var(--fg-2); }
+  .manage button { background:var(--panel-2); border:1px solid var(--line);
+      color:var(--fg-2); font:inherit; font-size:12px; border-radius:6px;
+      padding:4px 9px; cursor:pointer; }
+
+  /* ---- phone ----
+     Three things make this page worse on a phone than on the desktop, and all
+     three are size, not layout: text set for a 27" monitor, hit targets built
+     for a mouse, and inputs under 16px — which Safari answers by zooming the
+     whole viewport on focus and never zooming back. Fixed here in that order. */
+  @media (max-width:760px) {
+    :root { --rail:52px; }
+    body { font-size:14px; line-height:1.5; }
+    .rail { padding-bottom:calc(8px + env(safe-area-inset-bottom));
+            overscroll-behavior:contain; }
+    .rail-btn { width:40px; }
+    .rail-btn .glyph { width:40px; height:42px; font-size:15px; }
+    .rail-btn .cap { display:none; }
+    body.norail .rail { display:none; }
+    body.norail .frame-bar .home { display:inline-block; }
+    .wrap { padding:0 12px 24px 12px; }
+    header { padding-top:10px; }
+    .bar { gap:8px; }
+    h1 { font-size:16px; }
+    .sub { display:none; }                   /* the prefs panel carries the date */
+    .search { margin-left:auto; width:100%; order:2; }
+    .search input { width:100%; font-size:16px; padding:9px 32px 9px 12px; }
+    .search .hint { display:none; }
+    /* the tab strip scrolls; snap so a flick never parks a tab half off-screen */
+    nav#nav { margin-top:10px; gap:2px; overflow-x:auto; flex-wrap:nowrap;
+              scrollbar-width:none; scroll-snap-type:x proximity;
+              overscroll-behavior-x:contain; }
+    nav#nav::-webkit-scrollbar { display:none; }
+    nav#nav button { padding:12px 14px; font-size:13px; white-space:nowrap;
+                     scroll-snap-align:start; }
+    nav#nav button .k { display:none; }
+    .grid { grid-template-columns:1fr; gap:10px; }
+    .card > h2 { flex-direction:column; gap:2px; }
+    td { display:block; padding:6px 12px; text-align:left !important;
+         white-space:normal !important; width:auto !important; }
+    /* key/value pairs stack, so the key needs to read as a key, not as a
+       first line of prose */
+    td:first-child { padding-bottom:0; font-size:11px; color:var(--mut);
+         letter-spacing:.06em; text-transform:uppercase; }
+    td:first-child code, td:first-child kbd { text-transform:none;
+         letter-spacing:0; font-size:12.5px; }
+    td:last-child { border-top:0; padding-top:2px; }
+    tr.hd td:last-child { display:none; }
+    a { display:inline-block; padding:6px 0; }
+    kbd, code { word-break:break-word; }
+    /* touch targets: 24-26px mouse buttons are a miss half the time */
+    .hbtn { padding:8px 12px; font-size:12px; }
+    .tiles { grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); }
+    .qtile { padding:12px 11px; }
+    /* One row shape at 390px: name over value on the left, controls in auto
+       columns on the right spanning both lines. Two or more buttons ("show / hide", "quit (locks
+       vault)") leave no width for the name, so those rows put the buttons on
+       a line of their own under name and value. */
+    .ctl-row { display:grid; grid-auto-flow:column; grid-template-columns:minmax(0,1fr);
+               align-items:center; column-gap:8px; row-gap:1px; padding:9px 12px; }
+    .ctl-row .n { grid-area:1 / 1; }
+    .ctl-row .v { grid-area:2 / 1; min-width:0; font-size:11px; color:var(--mut);
+                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .ctl-row > .sw, .ctl-row > .ctl-btn { grid-row:1 / span 2; }
+    .ctl-row:has(> .ctl-btn + .ctl-btn) { display:flex; flex-wrap:wrap; }
+    .ctl-row:has(> .ctl-btn + .ctl-btn) > .n,
+    .ctl-row:has(> .ctl-btn + .ctl-btn) > .v { flex:1 1 100%; }
+    .ctl-row:has(> .ctl-btn + .ctl-btn) > .v { margin-bottom:6px; }
+    /* Descriptors off. On a phone the control is the point: the sub-line under
+       each name and the section lede are things
+       you read once and then scroll past forever. They stay on desktop, and
+       search still finds the prose cards. */
+    .ctl-row .n span, .lede { display:none; }
+    .ctl .pad { display:block; }              /* except "…unreachable" */
+    .ctl-btn { padding:8px 11px; font-size:12px; }
+    .sw { width:50px; height:30px; }
+    .sw i { width:24px; height:24px; }
+    .sw[aria-checked="true"] i { transform:translateX(20px); }
+    .frame-bar { padding:8px; gap:6px; }
+    .frame-bar button, .frame-bar a { padding:8px 11px; font-size:12px; }
+    .frame-bar .url { display:none; }        /* the tab bar already names it */
+    .modal-card { max-height:92dvh; overscroll-behavior:contain; }
+    .row label { flex:0 0 56px; }
+    .pick { padding:12px 2px; }
+    .manage { padding:10px 0; }
+    .manage button { padding:8px 11px; font-size:12px; }
+    footer { display:none; }
+  }

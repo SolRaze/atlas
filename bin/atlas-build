@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""atlas-build — assemble the atlas page from templates.
+
+  templates/base.html            wrapper ({{DATE}}, {{NAV}}, {{SECTIONS}}, {{NSEC}})
+  templates/app.css              inlined at {{STYLE}}
+  templates/app.js               inlined at {{SCRIPT}}
+  templates/sections.manifest    section order + labels (first section = homepage)
+  templates/sections/*.html      card partials
+  assets/                        icons + webmanifest + css, pushed beside the page
+
+Default: write build/index.html (safe, no clobber).
+  --push      scp page + assets to $ATLAS_DEST (host:/web/root)
+  --check     diff build vs what $ATLAS_DEST serves, date stamp aside; exit 1 on drift
+  --selftest  date-insensitive compare + manifest parse
+"""
+import datetime
+import html
+import os
+import re
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TPL = os.path.join(ROOT, "templates")
+BUILD = os.path.join(ROOT, "build", "index.html")
+# host:/dir the page is served from, e.g. web:/srv/www/atlas
+DEST = os.environ.get("ATLAS_DEST", "").rstrip("/")
+
+
+def parse_manifest():
+    """-> list of dicts: {id, flags, label, lede, parts[]}."""
+    secs = []
+    for ln in open(os.path.join(TPL, "sections.manifest")):
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        if ln.startswith("=="):
+            head, _, rest = ln[2:].partition("|")
+            label, _, lede = rest.partition("|")
+            ids = head.split()
+            secs.append({
+                "id": ids[0],
+                "flags": ids[1:],
+                "label": label.strip() or ids[0],
+                "lede": lede.strip(),
+                "parts": [],
+            })
+        elif secs:
+            secs[-1]["parts"].append(ln)
+        else:
+            print(f"WARN partial before any section: {ln}", file=sys.stderr)
+    return secs
+
+
+def render():
+    base = open(os.path.join(TPL, "base.html")).read()
+    secs = parse_manifest()
+
+    nav, body = [], []
+    for i, s in enumerate(secs, 1):
+        nav.append(
+            f'    <button data-sec="{s["id"]}">'
+            f'<span class="k">{i}</span>{html.escape(s["label"])}</button>'
+        )
+        cards = []
+        for name in s["parts"]:
+            p = os.path.join(TPL, "sections", name)
+            if not os.path.exists(p):
+                print(f"WARN missing partial: {name}", file=sys.stderr)
+                continue
+            cards.append(open(p).read().rstrip())
+        grid = "grid wide" if "wide" in s["flags"] else "grid"
+        lede = f'  <p class="lede">{html.escape(s["lede"])}</p>\n' if s["lede"] else ""
+        body.append(
+            f'<section id="{s["id"]}" data-label="{html.escape(s["label"])}">\n{lede}'
+            f'  <div class="{grid}">\n' + "\n".join(cards) + "\n  </div>\n</section>"
+        )
+
+    # One self-contained file: the css and js are inlined rather than linked,
+    # so the page and its icons are all the host serves.
+    out = (base
+           .replace("{{STYLE}}", read_tpl("app.css"))
+           .replace("{{SCRIPT}}", read_tpl("app.js"))
+           .replace("{{DATE}}", datetime.date.today().isoformat())
+           .replace("{{NSEC}}", str(len(secs)))
+           .replace("{{NAV}}", "\n".join(nav))
+           .replace("{{SECTIONS}}", "\n\n".join(body)))
+    out, _ = collapse_prose(out)
+    return out
+
+
+def collapse_prose(doc):
+    """Prose cards ship collapsed: <div class="card prose"> becomes a native
+    <details>, its <h2> the <summary>. The live cards stay plain divs, and CSS
+    orders prose last, so every section opens on its switches.
+
+    Partials hold no nested <div> inside a prose card; the scan below counts
+    depth anyway, so one added later cannot silently swallow the rest of a
+    section."""
+    out, i, n = [], 0, 0
+    while True:
+        a = doc.find('<div class="card prose"', i)
+        if a < 0:
+            out.append(doc[i:])
+            return "".join(out), n
+        out.append(doc[i:a])
+        open_end = doc.index(">", a) + 1
+        depth, j = 1, open_end
+        while depth:
+            nd, nc = doc.find("<div", j), doc.find("</div>", j)
+            if nc < 0:
+                raise SystemExit("unclosed prose card")
+            if 0 <= nd < nc:
+                depth, j = depth + 1, nd + 4
+            else:
+                depth, j = depth - 1, nc + 6
+        head, body = doc[a:open_end], doc[open_end:j - 6]
+        h2a = body.index("<h2>")
+        h2b = body.index("</h2>") + 5
+        out.append(head.replace("<div ", "<details ", 1))
+        out.append(body[:h2a] + "<summary>" + body[h2a:h2b] + "</summary>" + body[h2b:])
+        out.append("</details>")
+        i, n = j, n + 1
+    
+
+def read_tpl(name):
+    """Template file minus its trailing newline — it is inlined into a tag."""
+    return open(os.path.join(TPL, name)).read().rstrip("\n")
+
+
+def undated(doc):
+    """Page minus its date stamp. The build writes today's date into the
+    header, so a page nothing has changed since yesterday still differs from
+    the served copy by that one line — --check compares everything else."""
+    return re.sub(r"machine map \u00b7 \d{4}-\d{2}-\d{2}", "machine map", doc)
+
+
+def asset_files():
+    """Static files that must sit next to the page: app icons + manifest."""
+    d = os.path.join(ROOT, "assets")
+    if not os.path.isdir(d):
+        print(f"WARN no assets dir at {d} — pushing the page alone", file=sys.stderr)
+        return []
+    return [os.path.join(d, f) for f in sorted(os.listdir(d))
+            if f.endswith((".png", ".webmanifest", ".css"))]
+
+
+def need_dest():
+    if ":" not in DEST:
+        raise SystemExit("set ATLAS_DEST=host:/web/root first")
+    return DEST.split(":", 1)
+
+
+def push():
+    """Copy the built page and its assets to $ATLAS_DEST."""
+    need_dest()
+    files = [BUILD] + asset_files()
+    if subprocess.call(["scp", "-q", "-o", "ConnectTimeout=5", *files, DEST + "/"]) != 0:
+        print("PUSH FAILED", file=sys.stderr)
+        return 1
+    print(f"pushed page + {len(files) - 1} assets -> {DEST}/")
+    return 0
+
+
+def selftest():
+    src = '<div class="card prose"><h2>a</h2><div>x</div><table></table></div>after'
+    got, n = collapse_prose(src)
+    assert n == 1, n
+    assert got == ('<details class="card prose"><summary><h2>a</h2></summary>'
+                   '<div>x</div><table></table></details>after'), got
+    assert collapse_prose('<div class="card"><h2>a</h2></div>') == (
+        '<div class="card"><h2>a</h2></div>', 0), "live card must stay a div"
+    a = '<p class="sub">machine map \u00b7 2026-08-03</p>'
+    b = '<p class="sub">machine map \u00b7 2026-09-12</p>'
+    assert undated(a) == undated(b), "date stamp not normalised"
+    assert undated(a) != undated(b.replace("map", "mop")), "compare too loose"
+    secs = parse_manifest()
+    assert secs and all(s["id"] and s["parts"] for s in secs), "manifest parse"
+    for s in secs:
+        for name in s["parts"]:
+            assert os.path.exists(os.path.join(TPL, "sections", name)), name
+    nprose = render().count("<details class=\"card prose\"")
+    assert nprose, "no prose card collapsed"
+    print(f"selftest ok — {len(secs)} sections, "
+          f"{sum(len(s['parts']) for s in secs)} partials, "
+          f"{nprose} prose cards collapse")
+    return 0
+
+
+def main():
+    if "--selftest" in sys.argv:
+        return selftest()
+
+    doc = render()
+    os.makedirs(os.path.dirname(BUILD), exist_ok=True)
+    with open(BUILD, "w") as fh:
+        fh.write(doc)
+    nsec = doc.count("<section id=")
+    ncard = doc.count('<div class="card') + doc.count('<details class="card')
+    print(f"built {BUILD} ({len(doc)} bytes, {nsec} sections, {ncard} cards)")
+
+    if "--check" in sys.argv:
+        host, path = need_dest()
+        remote = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", host, "cat", path + "/index.html"],
+            capture_output=True, text=True)
+        if remote.returncode != 0:
+            print(f"CHECK FAILED — cannot read {DEST}/index.html", file=sys.stderr)
+            return 1
+        if undated(remote.stdout) == undated(doc):
+            print("up to date")
+            return 0
+        print("DRIFT: host serves a different page — run --push", file=sys.stderr)
+        return 1
+
+    if "--push" in sys.argv:
+        return push()
+
+    print("preview only — run with --push to publish")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
