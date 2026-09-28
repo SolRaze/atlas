@@ -461,8 +461,6 @@ function rowEl(name, note, value) {
   var modal = document.getElementById('prefModal');
   var box = document.getElementById('prefBody');
   var lists = [].slice.call(document.querySelectorAll('.card .ctl[id]'));
-  var sub = document.querySelector('header .sub');
-  if (sub) document.getElementById('prefLede').textContent += ' Page built ' + sub.textContent.replace(/^.*· /, '') + '.';
 
   function save() { lsSet(KEY, p); }
   function applyLayout() {

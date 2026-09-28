@@ -297,7 +297,7 @@
     header { padding-top:10px; }
     .bar { gap:8px; }
     h1 { font-size:16px; }
-    .sub { display:none; }                   /* the prefs panel carries the date */
+    .sub { display:none; }
     .search { margin-left:auto; width:100%; order:2; }
     .search input { width:100%; font-size:16px; padding:9px 32px 9px 12px; }
     .search .hint { display:none; }

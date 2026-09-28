@@ -1,0 +1,13 @@
+services:
+  atlas:
+    image: ghcr.io/solraze/atlas:latest
+    build: .
+    restart: unless-stopped
+    # localhost only; reach it over tailscale serve or a reverse proxy.
+    # "${ATLAS_PORT:-8080}:80" opens it to the LAN, with no login.
+    ports:
+      - "127.0.0.1:${ATLAS_PORT:-8080}:80"
+    # edits apply on `docker compose restart`
+    volumes:
+      - ./templates:/atlas/templates:ro
+      - ./assets:/atlas/assets:ro
