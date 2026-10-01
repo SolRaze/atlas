@@ -16,6 +16,12 @@
   POST /space/<w>         switch to workspace w
   POST /open?app=<name>   `open -a` that app
   POST /send?app=<name>&ws=<w>  move every window of that app to workspace w
+  POST /win?do=<d>[&id=<n>]
+                          on that window, or the focused one without id:
+                          float (toggle floating/tiling), split (tiles
+                          horizontal/vertical), accordion, full (fullscreen),
+                          next / prev (to the next / previous screen);
+                          screen moves focus to the next screen, no id
 
 ids must be ones /windows lists, w one /windows lists, names ones /apps lists:
 nothing a request sends reaches a shell or picks a program.
@@ -54,6 +60,16 @@ USE = os.path.join(STATE, "use.json")
 USE_IDLE_S = 120          # no input for this long: the focused app is not in use
 APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications",
             "/System/Applications/Utilities", os.path.expanduser("~/Applications"))
+# /win's do -> (aerospace argv, whether it takes --window-id)
+WIN = {
+    "float": (["layout", "floating", "tiling"], True),
+    "split": (["layout", "tiles", "horizontal", "vertical"], True),
+    "accordion": (["layout", "accordion", "horizontal", "vertical"], True),
+    "full": (["fullscreen"], True),
+    "next": (["move-node-to-monitor", "--focus-follows-window", "next"], True),
+    "prev": (["move-node-to-monitor", "--focus-follows-window", "prev"], True),
+    "screen": (["focus-monitor", "--wrap-around", "next"], False),
+}
 # launchd hands over a bare PATH
 ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
@@ -306,6 +322,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if ws not in names:
                 return self.send_json(404, {"error": "no such workspace"})
             return self.send_json(200, {"ok": True, "out": run([AEROBIN, "workspace", ws])})
+        if path == "/win":
+            wid, how = self.arg("id"), WIN.get(self.arg("do"))
+            if not how or wid and (not how[1] or not wid.isdigit()
+                                   or not any(w["id"] == int(wid) for w in windows())):
+                return self.send_json(404, {"error": "do is one of " + " ".join(WIN) + ", id one /windows lists"})
+            cmd = how[0]
+            argv = [AEROBIN, cmd[0]] + (["--window-id", wid] if wid else []) + cmd[1:]
+            return self.send_json(200, {"ok": True, "out": run(argv)})
         if path in ("/focus", "/tomain", "/move", "/close"):
             wid, ws = self.arg("id"), self.arg("ws")
             if not wid.isdigit() or not any(w["id"] == int(wid) for w in windows()):
@@ -334,6 +358,8 @@ def selftest():
     assert Fake("/windows").route() == "/windows"
     assert Fake("/send?app=Safari&ws=a%20b").arg("ws") == "a b"
     assert Fake("/send").arg("app") == ""
+    assert WIN.get(Fake("/win?do=float&id=7").arg("do"))[0][1:] == ["floating", "tiling"]
+    assert WIN.get(Fake("/win?do=--root").arg("do")) is None
     assert os.access(AEROBIN, os.X_OK), "aerospace not at %s (set AEROSPACE)" % AEROBIN
     listed = apps()
     assert listed and listed.get("../../bin/sh") is None

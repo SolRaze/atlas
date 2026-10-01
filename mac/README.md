@@ -3,7 +3,7 @@ mac kit
 opt-in | a Mac's screen, windows, workspaces and apps on the page | phone-first
 
 what it is
-- screen/ noVNC over Screen Sharing | trackpad pad, left middle right buttons, scroll strip | displays stacked upright | one window alone | double-tap full screen
+- screen/ noVNC over Screen Sharing | trackpad pad, left middle right buttons, scroll strip | displays stacked upright | one window alone | double-tap full screen | under it: render density, float split stack max, send to screen ◂ ▸, focus ⇆
 - windows/ every workspace as a chip, active and inactive | tap switches | every window grouped by workspace | focus, move, main, close
 - apps/ every `.app` as an icon | running bright, stopped dim | most used first | tap opens | pick one, send its windows to a workspace
 

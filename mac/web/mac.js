@@ -218,7 +218,7 @@
       function chip(x) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.className = 'sp' + (x.w === sp.focused ? ' on' : '') + (by[x.w] ? '' : ' empty') +
+        b.className = 'sp' + (x.w === sp.focused ? ' on' : '') + (by[x.w] ? '' : ' idle') +
           ((sp.shown || []).indexOf(x.w) >= 0 ? ' shown' : '');
         b.title = moving ? 'move ' + moving.app + ' to ' + x.w : x.w;
         b.innerHTML = '<b></b><span></span>' + (by[x.w] ? '<i></i>' : '');
@@ -820,7 +820,7 @@
   // The screen card: toolbar over the viewer while the switch is on.
   function screenCard(card) {
     var sw = card.querySelector('h2 .sw');
-    var bar = null, box = null, layout = [];
+    var bar = null, box = null, extra = null, into = null, layout = [];
 
     function button(text, title, fn) {
       var b = document.createElement('button');
@@ -840,7 +840,17 @@
         b.setAttribute('aria-pressed', o[0] === cur ? 'true' : 'false');
         g.appendChild(b);
       });
-      bar.appendChild(g);
+      into.appendChild(g);
+    }
+    function seg(opts, fn) {
+      var g = document.createElement('span');
+      g.className = 'vnc-seg';
+      opts.forEach(function (o) { g.appendChild(button(o[1], o[2], function () { fn(o[0]); })); });
+      into.appendChild(g);
+    }
+    function win(d) {
+      fetch(AGENT + '/win?do=' + d + (winId && d !== 'screen' ? '&id=' + winId : ''),
+        { method: 'POST', signal: giveUp() });
     }
     // One window alone: the picker lists every window aerospace manages, the
     // frame is re-read while one is picked so a move or resize follows it.
@@ -900,9 +910,12 @@
       return sel;
     }
 
+    // The bar over the viewer is one row; render density and the window
+    // binds sit under it, so they take no height from the screen.
     function draw() {
       bar.textContent = '';
       sel = null;
+      into = bar;
       if (layout.length) {
         bar.appendChild(winSelect());
         if (winId) bar.appendChild(button('to main', 'move this window to the main display',
@@ -912,11 +925,24 @@
         group(SCREEN, 'all', 'screens shown', [['all', 'all']].concat(
           layout.map(function (r) { return [r.name, r.name]; })));
       }
-      group(RENDER, 'full', 'pixels per CSS pixel in the stacked view',
-        [['full', 'full'], ['auto', 'auto'], [1, '1×'], [2, '2×']], box.rerender);
       bar.appendChild(button('reconnect', 'drop the session and connect again', box.reload));
       bar.appendChild(button('keyboard', 'type on the Mac', box.keyboard));
       bar.appendChild(button('fullscreen', 'double-tap the screen to leave', function () { box.full(true); }));
+      // the stacked view sizes itself from where the bar ends
+      box.rerender();
+      extra.textContent = '';
+      into = extra;
+      group(RENDER, 'full', 'pixels per CSS pixel in the stacked view',
+        [['full', 'full'], ['auto', 'auto'], [1, '1×'], [2, '2×']], box.rerender);
+      // aerospace's window commands, on the picked window or else the focused one
+      var who = winId ? 'this' : 'the focused';
+      seg([['float', 'float', 'float or tile ' + who + ' window'],
+           ['split', 'split', 'flip the split of ' + who + ' window'],
+           ['accordion', 'stack', 'accordion ' + who + ' window'],
+           ['full', 'max', 'aerospace fullscreen ' + who + ' window'],
+           ['prev', '◂', 'send ' + who + ' window to the previous screen'],
+           ['next', '▸', 'send ' + who + ' window to the next screen'],
+           ['screen', '⇆', 'focus the next screen']], win);
     }
 
     function on() {
@@ -924,6 +950,9 @@
       bar.className = 'vnc-bar';
       card.appendChild(bar);
       box = mount(card);
+      extra = document.createElement('div');
+      extra.className = 'vnc-more';
+      card.appendChild(extra);
       box.onlayout = function (l) { layout = l; if (l.length) readWins(); else draw(); };
       draw();
     }
@@ -932,7 +961,8 @@
       winId = 0;
       if (box) box.remove();
       if (bar) bar.remove();
-      box = bar = null;
+      if (extra) extra.remove();
+      box = bar = extra = null;
     }
     function paint() {
       var v = lsGet(ON, false);

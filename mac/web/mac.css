@@ -51,6 +51,8 @@
   .vnc-bar { display:flex; flex-wrap:wrap; gap:6px 12px; padding:8px 10px;
       border-bottom:1px solid var(--line); background:var(--panel); }
   .vnc-seg { display:inline-flex; gap:3px; }
+  .vnc-more { display:flex; flex-wrap:wrap; gap:8px 12px; padding:10px 12px; }
+  .vnc-more .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
   .vnc-bar .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
   /* the pointer: an arrow whose tip is the point last sent */
   .vnc-dot { display:none; position:absolute; left:0; top:0; width:14px; height:20px;
@@ -95,7 +97,7 @@
   .sp.on { border-color:var(--fg); background:var(--panel-2); }
   .sp.on b { color:var(--hi); }
   .sp { position:relative; }
-  .sp.empty { opacity:.5; }
+  .sp.idle { opacity:.5; }
   .sp.shown:not(.on) { border-color:var(--fg-2); }
   .sp i { position:absolute; top:2px; right:4px; font-style:normal; font-size:9px; color:var(--mut); }
   .sp-lbl { flex:0 0 100%; color:var(--mut); font-size:10px; letter-spacing:.08em;
