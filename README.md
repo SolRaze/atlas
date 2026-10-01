@@ -6,12 +6,13 @@ what it is
 - dashboard template | links, hosts, notes and keybinds as searchable cards | one static page
 - `bin/atlas-build` builds `templates/` into one self-contained `index.html` | css + js inlined | python 3 stdlib only
 - ships as a container `ghcr.io/solraze/atlas` | amd64 + arm64 | page rebuilt from your templates at every start
-- no login | no database | no api | the page calls nothing, it only links out
+- no login | no database | no api | the page calls nothing, it only links out | `mac/` kit excepted
 - installs as a home-screen app on iOS over https
 
 template version
 - static cards only | example page: two hosts, an explainer, a keybind table
-- live cards — container switches, screen control, printer, metrics — need an agent on each machine and a proxy route to it | not shipped
+- live cards — container switches, printer, metrics — need an agent on each machine and a proxy route to it | not shipped
+- Mac screen, windows, workspaces, apps | opt-in kit in `mac/` | see `mac/README.md`
 - hooks for them are in place: `<div class="ctl" id="…">` lists of `rowEl()` rows, `getJSON()` with a 20 s abort
 
 security
@@ -71,6 +72,7 @@ contents
 | `compose.yml` | pulls the image, mounts `templates/` + `assets/`, localhost port |
 | `.github/workflows/image.yml` | `v*` tag -> multi-arch image on ghcr.io |
 | `setup.md` | agent walkthrough: ask, write cards, serve, verify |
+| `mac/` | opt-in Mac kit: agent, relay, viewer, compose override |
 
 manifest
 `== <id> | <tab label> | <lede>` then one partial per line

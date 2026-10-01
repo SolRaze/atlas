@@ -1,2 +1,4 @@
 build/
 .DS_Store
+mac/password
+mac/web/novnc/

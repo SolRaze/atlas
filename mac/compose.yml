@@ -1,0 +1,27 @@
+# Mac kit, layered over the page's compose file:
+#   docker compose -f compose.yml -f mac/compose.yml up -d
+services:
+  atlas:
+    volumes:
+      - ./mac/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./mac/web:/usr/share/nginx/html/mac:ro
+    depends_on: [novnc]
+
+  # websockify + noVNC; only its /vnc websocket is used, the page serves
+  # its own noVNC copy from mac/web/novnc
+  novnc:
+    image: geek1011/easy-novnc
+    restart: unless-stopped
+    command: --addr=:8080 --host=relay --port=5901 --basic-ui --no-url-password --novnc-params=resize=scale
+    depends_on: [relay]
+
+  # logs in to the Mac's Screen Sharing; reachable on this network only
+  relay:
+    image: python:3-slim
+    restart: unless-stopped
+    command: sh -c "pip install -q --root-user-action=ignore cryptography && exec python3 /relay"
+    environment:
+      MAC_HOST: ${MAC_HOST:?set MAC_HOST to the Mac's tailnet address}
+    volumes:
+      - ./mac/relay:/relay:ro
+      - ./mac/password:/run/secrets/vnc:ro

@@ -1,0 +1,135 @@
+/* mac kit — viewer, windows and apps cards (mac.js). Uses the page's own
+   colour variables and .ctl-row / .ctl-btn / .ctl-head / .sw / .hbtn. */
+  /* mac screen viewer (app.js "mac screen"). The global iframe rule above is
+     for the app frames, so the viewer resets it. */
+  .vnc { position:relative; background:#000; border-radius:8px; overflow:hidden;
+         --pad:160px; --btns:44px; }
+  .vnc > iframe { position:static; display:block; height:70vh; background:#000; }
+  .vnc.stacked > iframe { position:absolute; inset:auto; top:0; left:0;
+      opacity:0; pointer-events:none; }
+  .vnc-stack { display:none; }
+  .vnc.stacked > .vnc-stack { display:flex; flex-direction:column;
+      align-items:flex-start; gap:2px; overflow-x:auto; scrollbar-width:none; }
+  .vnc-stack::-webkit-scrollbar { display:none; }
+  .vnc-stack canvas { display:block; touch-action:none; }
+  /* the page is viewport-fit=cover: the padding keeps the notch, the home
+     bar and the rounded corners off the screen and the controls */
+  .vnc.full { position:fixed; inset:0; z-index:1000; border-radius:0; overflow:auto;
+      box-sizing:border-box; padding:env(safe-area-inset-top) env(safe-area-inset-right)
+      env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  .vnc.full > iframe { height:calc(100% - var(--pad) - var(--btns)); }
+  .vnc-padrow { display:flex; height:var(--pad); border-top:1px solid var(--line); }
+  .vnc-pad { flex:1; background:var(--panel-2);
+      touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  .vnc-btns { display:flex; height:var(--btns); gap:1px; background:var(--line); }
+  .vnc-btns button { flex:1; background:var(--panel-2); color:var(--mut); border:0;
+      font:inherit; font-size:11px; letter-spacing:.06em; text-transform:uppercase;
+      touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  .vnc-btns button.on { background:var(--panel); color:var(--hi); }
+  .vnc-btns .exit { display:none; flex:0 0 auto; padding:0 16px; color:var(--fg-2); }
+  .vnc.full .vnc-btns .exit { display:block; }
+  .vnc-vscroll { flex:0 0 46px; display:flex; align-items:center; justify-content:center;
+      background:var(--panel); border-left:1px solid var(--line); color:var(--mut);
+      font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+      touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  .vnc-vscroll span { writing-mode:vertical-rl; }
+  .vnc-vscroll.on { color:var(--hi); background:var(--panel-2); }
+  /* full screen held sideways (app.js sideways): controls in a right column */
+  .vnc.side { display:grid; overflow:hidden; --side:clamp(170px, 28vw, 280px);
+      grid-template-columns:minmax(0, 1fr) var(--side); grid-template-rows:auto minmax(0, 1fr) calc(2 * var(--btns) + 1px); }
+  .vnc.side > iframe, .vnc.side > .vnc-stack { grid-column:1; grid-row:1 / -1; }
+  .vnc.side > iframe { height:100%; }
+  .vnc.side.stacked > .vnc-stack { justify-content:center; align-items:center; }
+  .vnc.side > .vnc-padrow, .vnc.side > .vnc-btns {
+      grid-column:2; border-left:1px solid var(--line); }
+  .vnc.side > .vnc-padrow { grid-row:1 / 3; height:auto; min-height:0; border-top:0; }
+  .vnc.side > .vnc-btns { grid-row:3; height:auto; flex-wrap:wrap; align-content:stretch; }
+  .vnc.side > .vnc-btns button { flex:1 1 40%; min-height:var(--btns); }
+  /* the screen card's switch, at the title's right edge */
+  #macScreen > h2 { position:relative; padding-right:66px; }
+  #macScreen > h2 .sw { position:absolute; right:13px; top:50%; transform:translateY(-50%); }
+  .vnc-bar { display:flex; flex-wrap:wrap; gap:6px 12px; padding:8px 10px;
+      border-bottom:1px solid var(--line); background:var(--panel); }
+  .vnc-seg { display:inline-flex; gap:3px; }
+  .vnc-bar .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
+  /* the pointer: an arrow whose tip is the point last sent */
+  .vnc-dot { display:none; position:absolute; left:0; top:0; width:14px; height:20px;
+      pointer-events:none; filter:drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000);
+      background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 20'%3E%3Cpath d='M1 1v16l4-4 3 6 2-1-3-6h6z' fill='%23fff' stroke='%23000' stroke-width='1'/%3E%3C/svg%3E") no-repeat; }
+
+  /* pills: a window as a rounded chip on an even grid, lit when focused.
+     A pill carrying two or more buttons takes the whole line: name left,
+     buttons right. The note moves to the tooltip. */
+  .ctl.pills { display:grid; grid-template-columns:repeat(auto-fill, minmax(max(11em, calc(25% - 5px)), 1fr));
+      gap:6px; padding:10px 13px; }
+  .pills > .ctl-head, .pills > .pad, .pills > .ctl-row:has(> .ctl-btn + .ctl-btn) { grid-column:1 / -1; }
+  .pills > .ctl-head { margin:4px -13px 0; }
+  .pills > .ctl-head:first-child { margin-top:-10px; }
+  .pills > .pad { padding:0; }
+  .pills > .ctl-row { display:flex; flex-wrap:nowrap; justify-content:space-between; gap:4px 7px;
+      min-width:0; padding:5px 11px; border:1px solid var(--line-2);
+      border-radius:14px; background:var(--bg); }
+  .pills > .ctl-row:has(> .ctl-btn + .ctl-btn) { flex-wrap:wrap; justify-content:flex-end; order:2; }
+  .pills > .ctl-row:has(> .ctl-btn) .v { margin-left:auto; }
+  .pills > .ctl-row:has(> .ctl-btn + .ctl-btn) .n { margin-right:auto; }
+  .pills > .ctl-row .n { flex:0 0 auto; max-width:100%; }
+  .pills > .ctl-row .n b { font-size:12px; color:var(--fg-2); }
+  .pills > .ctl-row .n span { display:none; }
+  .pills > .ctl-row .v { flex:0 1 auto; min-width:0; font-size:11.5px; color:var(--mut); max-width:14em;
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .pills > .tap { cursor:pointer; user-select:none;
+      -webkit-user-select:none; }
+  .pills > .tap.on, .pills > .tap:active { border-color:var(--fg-2); background:var(--panel-2); }
+  .pills > .ctl-row:focus-visible { outline:1px solid var(--fg); outline-offset:2px; }
+  .pills > .ctl-row .ctl-btn { border-radius:999px; padding:2px 8px; font-size:10.5px;
+      background:var(--panel-2); }
+  .pills > .ctl-row.busy { opacity:.45; pointer-events:none; }
+
+  /* workspace chips — letter on top, name under, lit one is the focused one */
+  .spaces { display:flex; flex-wrap:wrap; gap:6px; padding:9px 13px; }
+  .sp { flex:0 0 auto; min-width:40px; background:var(--bg); color:var(--mut);
+        border:1px solid var(--line-2); border-radius:9px; padding:6px 9px;
+        font:inherit; font-size:10.5px; cursor:pointer; text-align:center; }
+  .sp b { display:block; color:var(--fg-2); font-size:13px; font-weight:600;
+          text-transform:uppercase; }
+  .sp.on { border-color:var(--fg); background:var(--panel-2); }
+  .sp.on b { color:var(--hi); }
+  .sp { position:relative; }
+  .sp.empty { opacity:.5; }
+  .sp.shown:not(.on) { border-color:var(--fg-2); }
+  .sp i { position:absolute; top:2px; right:4px; font-style:normal; font-size:9px; color:var(--mut); }
+  .sp-lbl { flex:0 0 100%; color:var(--mut); font-size:10px; letter-spacing:.08em;
+      text-transform:uppercase; }
+  /* a window armed to move: the chips are its targets */
+  .moving .sp { border-style:dashed; border-color:var(--fg-2); opacity:1; }
+  .pills > .ctl-row.picked { border-color:var(--hi); }
+  .pills > .ctl-head.tap { cursor:pointer; }
+
+  /* apps — search box, then one icon per matching app */
+  .appq { padding:9px 13px 0; }
+  .appq input { width:100%; box-sizing:border-box; background:var(--panel-2); color:var(--fg);
+      border:1px solid var(--line-2); border-radius:var(--radius);
+      padding:7px 11px; font:inherit; font-size:12.5px; outline:none; }
+  .appq input:focus { border-color:var(--fg-2); }
+  .appq input::placeholder { color:var(--mut); }
+  /* icons in greyscale: running is full brightness,
+     stopped is dim; the letters under a running one are its workspaces */
+  .apps { display:grid; gap:4px; padding:9px 13px; max-height:min(520px, 60vh); overflow:auto;
+          grid-template-columns:repeat(auto-fill,minmax(64px,1fr)); }
+  .appb { display:flex; flex-direction:column; align-items:center; gap:2px; min-width:0;
+          background:none; color:var(--mut); border:1px solid transparent; border-radius:10px;
+          padding:6px 2px 4px; font:inherit; font-size:10.5px; cursor:pointer; }
+  .appb img { width:40px; height:40px; filter:grayscale(1); opacity:.4; }
+  .appb b { font-weight:400; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+            white-space:nowrap; }
+  .appb i { font-style:normal; font-size:9.5px; min-height:1.2em; color:var(--fg-2);
+            text-transform:uppercase; letter-spacing:.06em; }
+  .appb.on { color:var(--fg); }
+  .appb.on img { opacity:1; }
+  .appb:hover, .appb.sel { border-color:var(--line-2); background:var(--panel-2); }
+  .appb.busy { opacity:.45; }
+
+  /* small uppercase action button — card headers */
+  .re { background:var(--bg); color:var(--fg-2); border:1px solid var(--line-2);
+        border-radius:6px; padding:3px 9px; font:inherit; font-size:10.5px;
+        letter-spacing:.08em; text-transform:uppercase; cursor:pointer; }

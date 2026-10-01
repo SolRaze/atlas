@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""relay — the Mac's screen with no password prompt.
+
+noVNC in the `novnc` container connects here instead of to the Mac. This side
+logs in to the Mac's Screen Sharing with the legacy VNC password, then hands
+the browser a session that is already authenticated (security type None).
+From there it only copies bytes: ClientInit, ServerInit and every frame pass
+through as-is.
+
+  browser -> atlas /vnc/vnc -> novnc (websockify) -> relay:5901 (this)
+          -> MAC_HOST:5900 (Screen Sharing, legacy VNC auth)
+
+Runs as the `relay` service in mac/compose.yml, reachable only on the compose
+network. The password is read from PASSWORD_FILE, never from the request, a
+URL or the page. The upstream is fixed at start; nothing a client sends picks
+a host.
+
+  MAC_HOST        the Mac's tailnet address, required
+  MAC_PORT        5900
+  RELAY_PORT      5901
+  PASSWORD_FILE   /run/secrets/vnc
+
+  relay              serve
+  relay --selftest   DES vectors + a full handshake against a fake Mac
+"""
+import os
+import socket
+import socketserver
+import struct
+import sys
+import threading
+
+BIND = ("0.0.0.0", int(os.environ.get("RELAY_PORT", "5901")))
+MAC = (os.environ.get("MAC_HOST", ""), int(os.environ.get("MAC_PORT", "5900")))
+PASSWORD_FILE = os.environ.get("PASSWORD_FILE", "/run/secrets/vnc")
+VNC_AUTH, NONE = 2, 1
+
+
+def des_ecb(key, block):
+    try:
+        from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+    except ImportError:  # cryptography < 43
+        from cryptography.hazmat.primitives.ciphers.algorithms import TripleDES
+    from cryptography.hazmat.primitives.ciphers import Cipher, modes
+    # 3DES with K1 = K2 = K3 is single DES.
+    enc = Cipher(TripleDES(key * 3), modes.ECB()).encryptor()
+    return enc.update(block) + enc.finalize()
+
+
+def vnc_key(password):
+    """VNC auth keys DES with the password's first 8 bytes, each bit-reversed."""
+    raw = (password.encode("latin-1") + b"\0" * 8)[:8]
+    return bytes(int(f"{b:08b}"[::-1], 2) for b in raw)
+
+
+def recv_exact(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("peer closed during handshake")
+        buf += chunk
+    return buf
+
+
+def login_upstream(sock, password):
+    """Drive the Mac to an authenticated RFB 3.8 session, or raise."""
+    if not recv_exact(sock, 12).startswith(b"RFB "):
+        raise ConnectionError("upstream is not RFB")
+    sock.sendall(b"RFB 003.008\n")
+    n = recv_exact(sock, 1)[0]
+    if n == 0:
+        ln = struct.unpack(">I", recv_exact(sock, 4))[0]
+        raise ConnectionError("upstream refused: " + recv_exact(sock, ln).decode("latin-1"))
+    if VNC_AUTH not in recv_exact(sock, n):
+        # Screen Sharing only offers type 2 with VNCLegacyConnectionsEnabled = 1
+        raise ConnectionError("upstream offers no legacy VNC auth")
+    sock.sendall(bytes([VNC_AUTH]))
+    sock.sendall(des_ecb(vnc_key(password), recv_exact(sock, 16)))
+    if struct.unpack(">I", recv_exact(sock, 4))[0] != 0:
+        raise ConnectionError("upstream rejected the VNC password")
+
+
+def greet_client(sock):
+    """Offer the browser RFB 3.8 with security type None, already accepted."""
+    sock.sendall(b"RFB 003.008\n")
+    recv_exact(sock, 12)
+    sock.sendall(bytes([1, NONE]))
+    if recv_exact(sock, 1)[0] != NONE:
+        raise ConnectionError("client did not pick None")
+    sock.sendall(struct.pack(">I", 0))
+
+
+def pipe(a, b):
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for s in (a, b):
+            try:
+                s.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def relay(client, upstream_addr, password):
+    up = socket.create_connection(upstream_addr, timeout=10)
+    try:
+        login_upstream(up, password)
+        client.settimeout(10)
+        greet_client(client)
+    except Exception:
+        up.close()
+        raise
+    up.settimeout(None)
+    client.settimeout(None)
+    t = threading.Thread(target=pipe, args=(up, client), daemon=True)
+    t.start()
+    pipe(client, up)
+    t.join()
+    up.close()
+
+
+class Handler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            relay(self.request, MAC, self.server.password)
+        except Exception as e:
+            print(f"relay: {self.client_address[0]}: {e}", file=sys.stderr, flush=True)
+
+
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+def selftest():
+    # FIPS 46 worked example, then a VNC key: bit reversal of 'a' (0x61) is 0x86.
+    k = bytes.fromhex("133457799BBCDFF1")
+    assert des_ecb(k, bytes.fromhex("0123456789ABCDEF")).hex() == "85e813540f0ab405"
+    assert vnc_key("a")[:2] == bytes([0x86, 0x00])
+
+    password, challenge = "hunter2", os.urandom(16)
+    expect = des_ecb(vnc_key(password), challenge)
+    mac = socket.socket()
+    mac.bind(("127.0.0.1", 0))
+    mac.listen(1)
+
+    def fake_mac():
+        c, _ = mac.accept()
+        c.sendall(b"RFB 003.889\n")
+        recv_exact(c, 12)
+        c.sendall(bytes([2, 30, VNC_AUTH]))
+        assert recv_exact(c, 1)[0] == VNC_AUTH
+        c.sendall(challenge)
+        ok = recv_exact(c, 16) == expect
+        c.sendall(struct.pack(">I", 0 if ok else 1))
+        if ok:
+            c.sendall(b"FRAME")
+        c.close()
+
+    threading.Thread(target=fake_mac, daemon=True).start()
+    browser, relay_end = socket.socketpair()
+    threading.Thread(target=relay, args=(relay_end, mac.getsockname(), password),
+                     daemon=True).start()
+    assert recv_exact(browser, 12) == b"RFB 003.008\n"
+    browser.sendall(b"RFB 003.008\n")
+    assert recv_exact(browser, 2) == bytes([1, NONE]), "client not offered None"
+    browser.sendall(bytes([NONE]))
+    assert recv_exact(browser, 4) == struct.pack(">I", 0)
+    assert recv_exact(browser, 5) == b"FRAME", "bytes not relayed after login"
+    print("selftest ok — DES vectors, upstream login, None handoff, relay")
+    return 0
+
+
+def main():
+    if "--selftest" in sys.argv:
+        return selftest()
+    if not MAC[0]:
+        sys.exit("relay: set MAC_HOST")
+    with open(PASSWORD_FILE) as fh:
+        password = fh.read().rstrip("\n")
+    srv = Server(BIND, Handler)
+    srv.password = password
+    print(f"relay on {BIND[0]}:{BIND[1]} -> {MAC[0]}:{MAC[1]}", flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

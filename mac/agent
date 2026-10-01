@@ -1,0 +1,353 @@
+#!/usr/bin/env python3
+"""mac agent — what the atlas mac cards read and do on this Mac.
+
+  GET  /displays          every display: name, frame in points (top-left
+                          origin, main display at 0,0), backing scale
+  GET  /windows           every window aerospace manages: id, app, title,
+                          workspace, whether that workspace is on screen,
+                          frame in points; the focused window's id; workspaces
+  GET  /apps              every .app in the Applications folders: running,
+                          the workspaces its windows sit on, minutes focused
+  GET  /icon?app=<name>   that app's Finder icon, 96px PNG
+  POST /focus?id=<n>      focus that window, switching to its workspace
+  POST /tomain?id=<n>     move that window to the main display's visible workspace
+  POST /move?id=<n>&ws=<w>  move that window to workspace w
+  POST /close?id=<n>      close that window, as its close button does
+  POST /space/<w>         switch to workspace w
+  POST /open?app=<name>   `open -a` that app
+  POST /send?app=<name>&ws=<w>  move every window of that app to workspace w
+
+ids must be ones /windows lists, w one /windows lists, names ones /apps lists:
+nothing a request sends reaches a shell or picks a program.
+
+Binds 127.0.0.1 only. Publish it to your tailnet, never the LAN:
+
+    tailscale serve --bg --set-path=/mac http://127.0.0.1:8765
+
+There is no auth: anyone who reaches it can move and close your windows.
+Origins allowed to call it cross-origin: ATLAS_ORIGINS, comma-separated.
+
+  agent              serve
+  agent --selftest   route parsing + one read of each list
+"""
+import functools
+import http.server
+import json
+import os
+import plistlib
+import re
+import socketserver
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.parse
+
+PORT = int(os.environ.get("MAC_AGENT_PORT", "8765"))
+MOUNT = "/mac"            # the tailscale serve path; stripped if it arrives
+AEROBIN = os.environ.get("AEROSPACE", "/opt/homebrew/bin/aerospace")
+ORIGINS = {o.strip() for o in os.environ.get("ATLAS_ORIGINS", "").split(",") if o.strip()}
+STATE = os.path.expanduser("~/Library/Application Support/atlas-mac-agent")
+ICONS = os.path.expanduser("~/Library/Caches/atlas-mac-agent/icons")
+USE = os.path.join(STATE, "use.json")
+USE_IDLE_S = 120          # no input for this long: the focused app is not in use
+APP_DIRS = ("/Applications", "/Applications/Utilities", "/System/Applications",
+            "/System/Applications/Utilities", os.path.expanduser("~/Applications"))
+# launchd hands over a bare PATH
+ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+
+
+def out_of(argv, timeout=6):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, env=ENV).stdout
+    except Exception:
+        return ""
+
+
+def run(argv):
+    # output to a file, never a pipe: a child left running would hold a pipe open
+    with tempfile.TemporaryFile("w+") as fh:
+        try:
+            subprocess.run(argv, env=ENV, stdin=subprocess.DEVNULL,
+                           stdout=fh, stderr=subprocess.STDOUT, timeout=45)
+        except subprocess.TimeoutExpired:
+            return "timed out"
+        fh.seek(0)
+        return (fh.read().strip() or "ok")[-300:]
+
+
+def jxa(js, timeout=6):
+    return out_of(["/usr/bin/osascript", "-l", "JavaScript", "-e", js], timeout)
+
+
+DISPLAYS_JS = """ObjC.import('AppKit');
+var s = $.NSScreen.screens, m = s.objectAtIndex(0).frame, o = [];
+for (var i = 0; i < s.count; i++) {
+  var d = s.objectAtIndex(i), f = d.frame;
+  o.push({name: ObjC.unwrap(d.localizedName), x: f.origin.x,
+          y: m.size.height - (f.origin.y + f.size.height),
+          w: f.size.width, h: f.size.height, scale: d.backingScaleFactor});
+}
+JSON.stringify(o);"""
+
+# CGWindowList frames by window number, which is aerospace's window-id.
+# Layer 0 only: menus and overlays are not windows to share.
+FRAMES_JS = """ObjC.import('CoreGraphics');
+var a = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, 0)), o = {};
+for (var i = 0; i < a.count; i++) {
+  var d = a.objectAtIndex(i), b = d.objectForKey('kCGWindowBounds');
+  if (d.objectForKey('kCGWindowLayer').intValue !== 0) continue;
+  o[d.objectForKey('kCGWindowNumber').intValue] = ['X', 'Y', 'Width', 'Height']
+    .map(function (k) { return b.objectForKey(k).doubleValue; });
+}
+JSON.stringify(o);"""
+
+
+def displays():
+    try:
+        return json.loads(jxa(DISPLAYS_JS))
+    except ValueError:
+        return []
+
+
+def spaces():
+    """Every aerospace workspace; k is the chip's short label."""
+    names = out_of([AEROBIN, "list-workspaces", "--all"]).split()
+    return {"focused": out_of([AEROBIN, "list-workspaces", "--focused"]).strip(),
+            "shown": out_of([AEROBIN, "list-workspaces", "--monitor", "all", "--visible"]).split(),
+            "list": [{"k": n if len(n) <= 2 else n[0], "w": n} for n in names]}
+
+
+def windows():
+    """[{id, bid, app, ws, shown, title}] for every window aerospace manages.
+    Title is last: it may hold a tab."""
+    rows = []
+    for ln in out_of([AEROBIN, "list-windows", "--all", "--format",
+                      "%{window-id}%{tab}%{app-bundle-id}%{tab}%{app-name}%{tab}"
+                      "%{workspace}%{tab}%{workspace-is-visible}%{tab}%{window-title}"]).splitlines():
+        p = ln.split("\t", 5)
+        if len(p) == 6 and p[0].isdigit():
+            rows.append({"id": int(p[0]), "bid": p[1], "app": p[2], "ws": p[3],
+                         "shown": p[4] == "true", "title": p[5]})
+    return rows
+
+
+def window_list():
+    """windows() with each frame in points — None where CGWindowList has none."""
+    try:
+        frames = json.loads(jxa(FRAMES_JS))
+    except ValueError:
+        frames = {}
+    rows = windows()
+    for w in rows:
+        f = frames.get(str(w["id"])) or [None] * 4
+        w.update(x=f[0], y=f[1], w=f[2], h=f[3])
+        del w["bid"]
+    return rows
+
+
+def apps():
+    """name -> bundle path; the first folder in APP_DIRS wins a name clash."""
+    found = {}
+    for d in APP_DIRS:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for n in names:
+            if n.endswith(".app"):
+                found.setdefault(n[:-4], os.path.join(d, n))
+    return found
+
+
+@functools.lru_cache(maxsize=None)
+def info(bundle):
+    """(main executable path, bundle id); (None, None) if unreadable."""
+    try:
+        with open(bundle + "/Contents/Info.plist", "rb") as fh:
+            pl = plistlib.load(fh)
+    except Exception:
+        return None, None
+    exe = pl.get("CFBundleExecutable")
+    return (bundle + "/Contents/MacOS/" + exe if exe else None, pl.get("CFBundleIdentifier"))
+
+
+def load_use():
+    try:
+        with open(USE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def count_use():
+    """Once a minute, a minute to the focused app — skipped while the Mac sits idle."""
+    while True:
+        time.sleep(60)
+        m = re.search(r'"HIDIdleTime" = (\d+)', out_of(["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-d", "4"]))
+        if not m or int(m.group(1)) > USE_IDLE_S * 1e9:
+            continue
+        bid = out_of([AEROBIN, "list-windows", "--focused", "--format", "%{app-bundle-id}"]).strip()
+        if not bid:
+            continue
+        use = load_use()
+        use[bid] = use.get(bid, 0) + 1
+        os.makedirs(STATE, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", dir=STATE, delete=False) as f:
+            json.dump(use, f)
+        os.replace(f.name, USE)
+
+
+def app_states():
+    """[{n, on, ws, use}] — on means the main executable is in `ps`, so a
+    helper process left behind does not count."""
+    procs = set(out_of(["/bin/ps", "-axo", "comm="]).splitlines())
+    where = {}
+    for w in windows():
+        where.setdefault(w["bid"], [])
+        if w["ws"] not in where[w["bid"]]:
+            where[w["bid"]].append(w["ws"])
+    use = load_use()
+    out = []
+    for n, b in sorted(apps().items(), key=lambda kv: kv[0].lower()):
+        exe, bid = info(b)
+        out.append({"n": n, "on": exe in procs, "ws": where.get(bid, []), "use": use.get(bid, 0)})
+    return out
+
+
+def icon(bundle):
+    """PNG of the bundle's Finder icon, rendered once into ICONS."""
+    os.makedirs(ICONS, exist_ok=True)
+    png = os.path.join(ICONS, os.path.basename(bundle)[:-4] + ".png")
+    if not os.path.exists(png) or os.path.getmtime(png) < os.path.getmtime(bundle):
+        jxa(('ObjC.import("AppKit");'
+             'var r=$.NSBitmapImageRep.imageRepWithData($.NSWorkspace.sharedWorkspace'
+             '.iconForFile(%s).TIFFRepresentation);'
+             'r.representationUsingTypeProperties($.NSBitmapImageFileTypePNG,$())'
+             '.writeToFileAtomically(%s,true);""') % (json.dumps(bundle), json.dumps(png)), 20)
+        out_of(["/usr/bin/sips", "-Z", "96", png])
+    try:
+        with open(png, "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *a):
+        pass
+
+    def send_body(self, code, body, ctype, cache="no-store"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache)
+        origin = self.headers.get("Origin", "")
+        if origin in ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json(self, code, payload):
+        self.send_body(code, json.dumps(payload).encode(), "application/json")
+
+    def route(self):
+        path = self.path.split("?", 1)[0]
+        if path.startswith(MOUNT):
+            path = path[len(MOUNT):] or "/"
+        return path
+
+    def arg(self, key):
+        q = urllib.parse.parse_qs(self.path.split("?", 1)[1] if "?" in self.path else "")
+        return (q.get(key) or [""])[0]
+
+    def do_GET(self):
+        path = self.route()
+        if path == "/displays":
+            self.send_json(200, {"displays": displays()})
+        elif path == "/windows":
+            focused = out_of([AEROBIN, "list-windows", "--focused", "--format", "%{window-id}"]).strip()
+            self.send_json(200, {"windows": window_list(), "spaces": spaces(),
+                                 "focused": int(focused) if focused.isdigit() else 0})
+        elif path == "/apps":
+            self.send_json(200, {"apps": app_states(), "spaces": spaces()["list"]})
+        elif path == "/icon":
+            app = apps().get(self.arg("app"))
+            png = icon(app) if app else None
+            if png:
+                self.send_body(200, png, "image/png", "max-age=86400")
+            else:
+                self.send_json(404, {"error": "no such app"})
+        else:
+            self.send_json(404, {"error": "no such route"})
+
+    def do_POST(self):
+        path = self.route()
+        names = [x["w"] for x in spaces()["list"]]
+        if path == "/open":
+            app = apps().get(self.arg("app"))
+            if not app:
+                return self.send_json(404, {"error": "no such app"})
+            return self.send_json(200, {"ok": True, "out": run(["/usr/bin/open", "-a", app])})
+        if path == "/send":
+            app, ws = apps().get(self.arg("app")), self.arg("ws")
+            if not app or ws not in names:
+                return self.send_json(404, {"error": "no such app or workspace"})
+            ids = [str(w["id"]) for w in windows() if w["bid"] == info(app)[1]]
+            for wid in ids:
+                run([AEROBIN, "move-node-to-workspace", "--window-id", wid, ws])
+            return self.send_json(200, {"ok": True, "moved": len(ids)})
+        if path.startswith("/space/"):
+            ws = urllib.parse.unquote(path[len("/space/"):])
+            if ws not in names:
+                return self.send_json(404, {"error": "no such workspace"})
+            return self.send_json(200, {"ok": True, "out": run([AEROBIN, "workspace", ws])})
+        if path in ("/focus", "/tomain", "/move", "/close"):
+            wid, ws = self.arg("id"), self.arg("ws")
+            if not wid.isdigit() or not any(w["id"] == int(wid) for w in windows()):
+                return self.send_json(404, {"error": "no such window"})
+            if path == "/move" and ws not in names:
+                return self.send_json(404, {"error": "no such workspace"})
+            argv = {"/focus": [AEROBIN, "focus", "--window-id", wid],
+                    "/tomain": [AEROBIN, "move-node-to-monitor", "--window-id", wid,
+                                "--focus-follows-window", "main"],
+                    "/move": [AEROBIN, "move-node-to-workspace", "--window-id", wid, ws],
+                    "/close": [AEROBIN, "close", "--window-id", wid]}[path]
+            return self.send_json(200, {"ok": True, "out": run(argv)})
+        self.send_json(404, {"error": "no such route"})
+
+
+class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def selftest():
+    class Fake(Handler):
+        def __init__(self, path):
+            self.path = path
+    assert Fake("/mac/windows?x=1").route() == "/windows"
+    assert Fake("/windows").route() == "/windows"
+    assert Fake("/send?app=Safari&ws=a%20b").arg("ws") == "a b"
+    assert Fake("/send").arg("app") == ""
+    assert os.access(AEROBIN, os.X_OK), "aerospace not at %s (set AEROSPACE)" % AEROBIN
+    listed = apps()
+    assert listed and listed.get("../../bin/sh") is None
+    assert displays(), "no displays from NSScreen"
+    wins = window_list()
+    assert all(isinstance(w["id"], int) for w in wins)
+    print("ok — %d apps, %d windows, %d displays" % (len(listed), len(wins), len(displays())))
+
+
+if __name__ == "__main__":
+    if "--selftest" in sys.argv:
+        selftest()
+        raise SystemExit(0)
+    threading.Thread(target=count_use, daemon=True).start()
+    # a cold icon takes a second or more; render them all once up front
+    threading.Thread(target=lambda: [icon(b) for b in apps().values()], daemon=True).start()
+    Server(("127.0.0.1", PORT), Handler).serve_forever()

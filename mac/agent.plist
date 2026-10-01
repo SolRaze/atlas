@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ~/Library/LaunchAgents/atlas.mac-agent.plist | replace both PATH_TO and ATLAS_ORIGINS -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>atlas.mac-agent</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/python3</string><string>PATH_TO/mac/agent</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>ATLAS_ORIGINS</key><string>https://atlas-host.TAILNET.ts.net</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
