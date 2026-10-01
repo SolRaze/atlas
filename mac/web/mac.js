@@ -310,7 +310,7 @@
      on the pad, left drags. A tap clicks only after TAP_MS, so a touch inside
      that window becomes a held button, not a double-click. Screen Sharing
      leaves the cursor out of the framebuffer and touch devices draw none, so
-     an arrow drawn over the view stands in for it at the last position sent.
+     a dot drawn over the view stands in for it at the last position sent.
 
      Render: the stacked displays are drawn at the Mac's own pixels (full),
      this window's device pixel ratio (auto) or a fixed 1x or 2x of their CSS
