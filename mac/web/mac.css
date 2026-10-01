@@ -55,8 +55,8 @@
   .vnc-more .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
   .vnc-bar .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
   /* the pointer: a dot centred on the point last sent */
-  .vnc-dot { display:none; position:absolute; left:-6px; top:-6px; width:12px; height:12px;
-      pointer-events:none; border-radius:50%; background:#fff; box-shadow:0 0 0 1.5px #000; }
+  .vnc-dot { display:none; position:absolute; left:-2px; top:-2px; width:4px; height:4px;
+      pointer-events:none; border-radius:50%; background:#fff; box-shadow:0 0 0 1px #000; }
 
   /* pills: a window as a rounded chip on an even grid, lit when focused.
      A pill carrying two or more buttons takes the whole line: name left,
