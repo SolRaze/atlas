@@ -136,6 +136,16 @@ def spaces():
             "list": [{"k": n if len(n) <= 2 else n[0], "w": n} for n in names]}
 
 
+
+def label(app, title):
+    """(app, title) for a row. Browsers title a window "<tab> - <app>" or, with
+    profiles, "<tab> - <app> - <profile>": the app's name is dropped from the
+    title and the profile joins the app, so a row tells two profiles apart."""
+    m = re.match(r"(.*) - %s(?: - (.+))?$" % re.escape(app), title)
+    if not m:
+        return app, title
+    return (app + " · " + m.group(2) if m.group(2) else app), m.group(1)
+
 def windows():
     """[{id, bid, app, ws, shown, title}] for every window aerospace manages.
     Title is last: it may hold a tab."""
@@ -145,8 +155,9 @@ def windows():
                       "%{workspace}%{tab}%{workspace-is-visible}%{tab}%{window-title}"]).splitlines():
         p = ln.split("\t", 5)
         if len(p) == 6 and p[0].isdigit():
-            rows.append({"id": int(p[0]), "bid": p[1], "app": p[2], "ws": p[3],
-                         "shown": p[4] == "true", "title": p[5]})
+            app, title = label(p[2], p[5])
+            rows.append({"id": int(p[0]), "bid": p[1], "app": app, "ws": p[3],
+                         "shown": p[4] == "true", "title": title})
     return rows
 
 
@@ -360,6 +371,10 @@ def selftest():
     assert Fake("/send").arg("app") == ""
     assert WIN.get(Fake("/win?do=float&id=7").arg("do"))[0][1:] == ["floating", "tiling"]
     assert WIN.get(Fake("/win?do=--root").arg("do")) is None
+    assert label("Helium", "hoard - Helium - hub") == ("Helium · hub", "hoard")
+    assert label("KeePassXC", "pw-db - KeePassXC") == ("KeePassXC", "pw-db")
+    assert label("T3 Code", "T3 Code") == ("T3 Code", "T3 Code")
+    assert label("a.b", "x - aXb") == ("a.b", "x - aXb")
     assert os.access(AEROBIN, os.X_OK), "aerospace not at %s (set AEROSPACE)" % AEROBIN
     listed = apps()
     assert listed and listed.get("../../bin/sh") is None
