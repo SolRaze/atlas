@@ -314,9 +314,10 @@
 
      Render: the stacked displays are drawn at the Mac's own pixels (full),
      this window's device pixel ratio (auto) or a fixed 1x or 2x of their CSS
-     size, never past the Mac's pixels. A copy runs when noVNC draws a frame
-     — its canvas context is wrapped to flag it — so a still screen costs no
-     copies. */
+     size, never past the Mac's pixels; auto is the default. A copy runs when
+     noVNC draws a frame — its canvas context is wrapped to read the damaged
+     rect — so a still screen costs no copies and a cursor blink copies a
+     cursor, not a display. */
   var VIEWER = 'mac/novnc/vnc.html?path=%2Fvnc%2Fvnc&autoconnect=true&resize=scale&reconnect=true';
   var WIN_POLL_MS = 2000;
   // CHECK_MS paces the layout and cursor checks; frames copy on noVNC's draws
@@ -381,7 +382,8 @@
     host.appendChild(box);
 
     // pos: last pointer position sent to the Mac, framebuffer coordinates
-    // dirty: noVNC drew since the last copy. seen: framebuffer size last read
+    // dirty: what noVNC drew since the last copy — false, true for all of
+    // it, or a {l,t,r,b} rect in framebuffer pixels. seen: framebuffer size last read
     var views = [], shown = '', seen = null, lastCheck = 0, lastTap = null, pos = null, dirty = false;
     var layout = [], geo = null;
 
@@ -689,7 +691,7 @@
       var fit = (room() - under()) / total;
       var k = !box.classList.contains('full') ? 1
         : box.classList.contains('side') ? Math.max(0.2, Math.min(1, fit)) : Math.max(0.2, fit);
-      var dpr = lsGet(RENDER, 'full');
+      var dpr = lsGet(RENDER, 'auto');
       if (dpr === 'full') dpr = Infinity;
       if (dpr === 'auto') dpr = window.devicePixelRatio || 1;
       dirty = true;
@@ -713,12 +715,35 @@
       if (f.style.height !== h) f.style.height = h;
     }
 
-    // Every visible noVNC update is one drawImage on its canvas's context.
+    // Every visible noVNC update is one drawImage on its canvas's context,
+    // the 9-argument form whose last four are the damaged rect (display.js
+    // flip). Any other form marks the whole canvas.
     function watch(s) {
       var ctx = s.getContext('2d'), draw = ctx.drawImage;
       if (ctx.atlasWatched) return;
       ctx.atlasWatched = true;
-      ctx.drawImage = function () { dirty = true; return draw.apply(this, arguments); };
+      ctx.drawImage = function (img, a, b, c, d, x, y, w, h) {
+        if (arguments.length !== 9 || dirty === true) dirty = true;
+        else if (!dirty) dirty = { l: x, t: y, r: x + w, b: y + h };
+        else dirty = { l: Math.min(dirty.l, x), t: Math.min(dirty.t, y),
+                       r: Math.max(dirty.r, x + w), b: Math.max(dirty.b, y + h) };
+        return draw.apply(this, arguments);
+      };
+    }
+    // Copies the damaged part of r's region onto its canvas. Dest edges are
+    // whole pixels and the source is mapped back from them, so a partial copy
+    // matches a full one pixel for pixel and leaves no seam.
+    function copy(s, v, d) {
+      var r = v.r, kx = v.c.width / r.w, ky = v.c.height / r.h;
+      var l = r.x, t = r.y, rr = r.x + r.w, b = r.y + r.h;
+      if (d !== true) {
+        l = Math.max(l, d.l); t = Math.max(t, d.t); rr = Math.min(rr, d.r); b = Math.min(b, d.b);
+        if (l >= rr || t >= b) return;
+      }
+      var x0 = Math.floor((l - r.x) * kx), y0 = Math.floor((t - r.y) * ky);
+      var x1 = Math.min(v.c.width, Math.ceil((rr - r.x) * kx)), y1 = Math.min(v.c.height, Math.ceil((b - r.y) * ky));
+      v.ctx.drawImage(s, r.x + x0 / kx, r.y + y0 / ky, (x1 - x0) / kx, (y1 - y0) / ky,
+        x0, y0, x1 - x0, y1 - y0);
     }
 
     function tick(t) {
@@ -732,10 +757,9 @@
       if (!views.length || !dirty) return;
       var s = canvas();
       if (!s || !s.width) return;
+      var d = dirty;
       dirty = false;
-      views.forEach(function (v) {
-        v.ctx.drawImage(s, v.r.x, v.r.y, v.r.w, v.r.h, 0, 0, v.c.width, v.c.height);
-      });
+      views.forEach(function (v) { copy(s, v, d); });
     }
 
     // A window frame as a framebuffer rect, clipped to it; null when nothing
@@ -932,7 +956,7 @@
       box.rerender();
       extra.textContent = '';
       into = extra;
-      group(RENDER, 'full', 'pixels per CSS pixel in the stacked view',
+      group(RENDER, 'auto', 'pixels per CSS pixel in the stacked view',
         [['full', 'full'], ['auto', 'auto'], [1, '1×'], [2, '2×']], box.rerender);
       // aerospace's window commands, on the picked window or else the focused one
       var who = winId ? 'this' : 'the focused';
