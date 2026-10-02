@@ -918,7 +918,7 @@
       wins.forEach(function (w) {
         var o = document.createElement('option');
         o.value = w.id;
-        o.textContent = w.app + (w.title && w.title !== w.app ? ' — ' + w.title.slice(0, 40) : '') +
+        o.textContent = w.app + (w.title && w.title !== w.app ? ' — ' + w.title.slice(0, 24) : '') +
           (w.shown ? '' : ' · ' + w.ws);
         sel.appendChild(o);
       });

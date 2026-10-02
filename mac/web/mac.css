@@ -53,6 +53,8 @@
       border-bottom:1px solid var(--line); background:var(--panel); }
   .vnc-seg { display:inline-flex; gap:3px; }
   .vnc-more { display:flex; flex-wrap:wrap; gap:8px 12px; padding:10px 12px; }
+  /* a select is as wide as its longest option; window titles would push it off the screen */
+  .vnc-more select { min-width:0; max-width:100%; text-overflow:ellipsis; }
   .vnc-more .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
   .vnc-bar .hbtn[aria-pressed="true"] { color:var(--hi); border-color:var(--mut); }
   /* the pointer: a dot centred on the point last sent */
