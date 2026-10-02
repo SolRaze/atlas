@@ -977,7 +977,8 @@
       extra = document.createElement('div');
       extra.className = 'vnc-more';
       card.appendChild(extra);
-      box.onlayout = function (l) { layout = l; if (l.length) readWins(); else draw(); };
+      // the picker and screen group need the layout, so the bar waits on it
+      box.onlayout = function (l) { layout = l; draw(); if (l.length) readWins(); };
       draw();
     }
     function off() {
