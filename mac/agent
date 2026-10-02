@@ -4,8 +4,8 @@
   GET  /displays          every display: name, frame in points (top-left
                           origin, main display at 0,0), backing scale
   GET  /windows           every window aerospace manages: id, app, title,
-                          workspace, whether that workspace is on screen,
-                          frame in points; the focused window's id; workspaces
+                          workspace, whether that workspace is on screen;
+                          the focused window's id; workspaces
   GET  /apps              every .app in the Applications folders: running,
                           the workspaces its windows sit on, minutes focused
   GET  /icon?app=<name>   that app's Finder icon, 96px PNG
@@ -14,7 +14,11 @@
   POST /move?id=<n>&ws=<w>  move that window to workspace w
   POST /close?id=<n>      close that window, as its close button does
   POST /space/<w>         switch to workspace w
-  POST /open?app=<name>   `open -a` that app
+  POST /open?app=<name>   focus that app's first window, else bring it
+                          forward if running, else `open -a` it
+  POST /quit?app=<name>[&force=1]
+                          quit that app as cmd-q does; force=1 SIGKILLs its
+                          main executable, nothing is saved
   POST /send?app=<name>&ws=<w>  move every window of that app to workspace w
   POST /win?do=<d>[&id=<n>]
                           on that window, or the focused one without id:
@@ -42,6 +46,7 @@ import json
 import os
 import plistlib
 import re
+import signal
 import socketserver
 import subprocess
 import sys
@@ -70,6 +75,11 @@ WIN = {
     "prev": (["move-node-to-monitor", "--focus-follows-window", "prev"], True),
     "screen": (["focus-monitor", "--wrap-around", "next"], False),
 }
+# the bundle id goes in as argv, never into the script text
+QUIT = ["/usr/bin/osascript", "-e", "on run a", "-e",
+        "tell application id (item 1 of a) to quit", "-e", "end run"]
+ACTIVATE = ["/usr/bin/osascript", "-e", "on run a", "-e",
+            "tell application id (item 1 of a) to activate", "-e", "end run"]
 # launchd hands over a bare PATH
 ENV = dict(os.environ, PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
 
@@ -107,19 +117,6 @@ for (var i = 0; i < s.count; i++) {
           w: f.size.width, h: f.size.height, scale: d.backingScaleFactor});
 }
 JSON.stringify(o);"""
-
-# CGWindowList frames by window number, which is aerospace's window-id.
-# Layer 0 only: menus and overlays are not windows to share.
-FRAMES_JS = """ObjC.import('CoreGraphics');
-var a = ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionAll, 0)), o = {};
-for (var i = 0; i < a.count; i++) {
-  var d = a.objectAtIndex(i), b = d.objectForKey('kCGWindowBounds');
-  if (d.objectForKey('kCGWindowLayer').intValue !== 0) continue;
-  o[d.objectForKey('kCGWindowNumber').intValue] = ['X', 'Y', 'Width', 'Height']
-    .map(function (k) { return b.objectForKey(k).doubleValue; });
-}
-JSON.stringify(o);"""
-
 
 def displays():
     try:
@@ -162,15 +159,9 @@ def windows():
 
 
 def window_list():
-    """windows() with each frame in points — None where CGWindowList has none."""
-    try:
-        frames = json.loads(jxa(FRAMES_JS))
-    except ValueError:
-        frames = {}
+    """windows() as the page gets them, without bundle ids."""
     rows = windows()
     for w in rows:
-        f = frames.get(str(w["id"])) or [None] * 4
-        w.update(x=f[0], y=f[1], w=f[2], h=f[3])
         del w["bid"]
     return rows
 
@@ -199,6 +190,20 @@ def info(bundle):
         return None, None
     exe = pl.get("CFBundleExecutable")
     return (bundle + "/Contents/MacOS/" + exe if exe else None, pl.get("CFBundleIdentifier"))
+
+
+def kill(exe):
+    """SIGKILL every process whose executable is exe; how many it reached."""
+    n = 0
+    for line in out_of(["/bin/ps", "-axo", "pid=,comm="]).splitlines():
+        pid, _, comm = line.strip().partition(" ")
+        if exe and comm == exe:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                n += 1
+            except (OSError, ValueError):
+                pass
+    return n
 
 
 def load_use():
@@ -319,7 +324,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
             app = apps().get(self.arg("app"))
             if not app:
                 return self.send_json(404, {"error": "no such app"})
-            return self.send_json(200, {"ok": True, "out": run(["/usr/bin/open", "-a", app])})
+            exe, bid = info(app)
+            ids = [w["id"] for w in windows() if w["bid"] == bid]
+            if ids:
+                argv = [AEROBIN, "focus", "--window-id", str(ids[0])]
+            elif exe and exe in set(out_of(["/bin/ps", "-axo", "comm="]).splitlines()):
+                argv = ACTIVATE + [bid]
+            else:
+                argv = ["/usr/bin/open", "-a", app]
+            return self.send_json(200, {"ok": True, "out": run(argv)})
+        if path == "/quit":
+            app = apps().get(self.arg("app"))
+            exe, bid = info(app) if app else (None, None)
+            if not bid:
+                return self.send_json(404, {"error": "no such app"})
+            if self.arg("force") == "1":
+                return self.send_json(200, {"ok": True, "killed": kill(exe)})
+            return self.send_json(200, {"ok": True, "out": run(QUIT + [bid])})
         if path == "/send":
             app, ws = apps().get(self.arg("app")), self.arg("ws")
             if not app or ws not in names:
@@ -371,6 +392,7 @@ def selftest():
     assert Fake("/send").arg("app") == ""
     assert WIN.get(Fake("/win?do=float&id=7").arg("do"))[0][1:] == ["floating", "tiling"]
     assert WIN.get(Fake("/win?do=--root").arg("do")) is None
+    assert all("item 1 of a" in x or "%" not in x for x in QUIT + ACTIVATE)  # no interpolation
     assert label("Helium", "hoard - Helium - hub") == ("Helium · hub", "hoard")
     assert label("KeePassXC", "pw-db - KeePassXC") == ("KeePassXC", "pw-db")
     assert label("T3 Code", "T3 Code") == ("T3 Code", "T3 Code")

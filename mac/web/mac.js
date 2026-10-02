@@ -48,8 +48,10 @@
      A bright icon is a running app, a dim one is not. Most used sorts first
      — minutes it held focus, counted by the agent — then running ones; the
      letters under a running one are the workspaces its windows are on. A tap
-     opens a stopped app. A tap on a running one picks it, and the chips under
-     the grid send its windows to another workspace. */
+     only picks an app: a stopped one starts from `open` in the header, never
+     from the tile, and a running one gets `force quit` there and chips under
+     the grid that send its windows to another workspace, bring it forward or
+     quit it. */
   var CARDS = {
     windows: '<h2><span>windows</span><span class="note">on the mac</span></h2>' +
       '<div class="spaces"></div><div class="ctl pills"><p class="lede pad">reaching the mac…</p></div>',
@@ -84,18 +86,21 @@
           b.querySelector('img').src = AGENT + '/icon?app=' + encodeURIComponent(a.n);
           b.querySelector('b').textContent = a.n;
           b.querySelector('i').textContent = a.ws.map(key).join(' ');
-          b.title = a.n + (a.on ? ' · running' + (a.ws.length ? ' on ' + a.ws.join(', ') : '') : ' · tap to open');
+          b.title = a.n + (a.on ? ' · running' + (a.ws.length ? ' on ' + a.ws.join(', ') : '') : ' · tap, then open');
           b.addEventListener('click', function () {
-            if (!a.on) return open(a.n, b);
             picked = picked === a.n ? '' : a.n;
             draw();
+            if (picked) send.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           });
           box.appendChild(b);
         });
       drawSend();
       var n = apps.filter(function (a) { return a.on; }).length;
+      var p = apps.filter(function (a) { return a.n === picked; })[0];
       note.innerHTML = n + ' of ' + apps.length + ' running' +
-        ' <button class="re" type="button" title="re-read running apps">refresh</button>';
+        ' <button class="re" type="button" title="re-read running apps">refresh</button>' +
+        (!p ? '' : p.on ? ' <button class="re fq" type="button" title="kill the picked app, as Force Quit does">force quit</button>'
+                        : ' <button class="re op" type="button" title="start the picked app">open</button>');
     }
 
     function drawSend() {
@@ -132,6 +137,20 @@
       f.innerHTML = '<b>↑</b><span>bring forward</span>';
       f.addEventListener('click', function () { open(a.n, f); });
       row.appendChild(f);
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'sp';
+      x.title = 'quit ' + a.n + ', as cmd-q does';
+      x.innerHTML = '<b>×</b><span>quit</span>';
+      x.addEventListener('click', function () {
+        row.style.opacity = '.45';
+        fetch(AGENT + '/quit?app=' + encodeURIComponent(a.n), { method: 'POST', signal: giveUp() })
+          .then(function (r) { if (!r.ok) throw new Error(r.status); })
+          // an app can take a moment to leave `ps`; read twice
+          .then(function () { picked = ''; setTimeout(load, 800); setTimeout(load, 3000); })
+          .catch(function () { row.style.opacity = ''; note.textContent = a.n + ' — no answer'; });
+      });
+      row.appendChild(x);
       send.appendChild(row);
     }
 
@@ -142,6 +161,14 @@
         // an app takes a moment to exist in `ps`; read twice
         .then(function () { setTimeout(load, 1200); setTimeout(load, 4000); })
         .catch(function () { b.classList.remove('busy'); note.textContent = n + ' — no answer'; });
+    }
+
+    // SIGKILL: nothing is saved, so it asks first
+    function forceQuit(n) {
+      if (!n || !confirm('Force quit ' + n + '? Unsaved work is lost.')) return;
+      fetch(AGENT + '/quit?app=' + encodeURIComponent(n) + '&force=1', { method: 'POST', signal: giveUp() })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); picked = ''; return load(); })
+        .catch(function () { note.textContent = n + ' — no answer'; });
     }
 
     function load() {
@@ -156,7 +183,11 @@
       var first = box.querySelector('.appb');
       if (first) first.click();
     });
-    note.addEventListener('click', function (e) { if (e.target.closest('.re')) load(); });
+    note.addEventListener('click', function (e) {
+      if (e.target.closest('.fq')) return forceQuit(picked);
+      if (e.target.closest('.op')) return open(picked, e.target.closest('.op'));
+      if (e.target.closest('.re')) load();
+    });
     onReturn(load, function () { return 0; });
     load();
   }
@@ -289,7 +320,7 @@
 
      Screen Sharing sends every display as one framebuffer, side by side,
      which is an unreadable strip on a phone held upright. Once noVNC is
-     connected and the screen is portrait, or one screen or window is picked,
+     connected and the screen is portrait, or one screen is picked,
      its iframe stays underneath at opacity 0 — still decoding, still holding
      the session — and each display shown is copied out of its canvas into a
      canvas of its own: left-to-right becomes top-to-bottom. Where each
@@ -317,20 +348,32 @@
      size, never past the Mac's pixels; auto is the default. A copy runs when
      noVNC draws a frame — its canvas context is wrapped to read the damaged
      rect — so a still screen costs no copies and a cursor blink copies a
-     cursor, not a display. */
+     cursor, not a display.
+
+     Out of sight — page hidden, or the card scrolled into a tab not shown —
+     for PARK_MS, the viewer drops its session and reconnects on return. The
+     card's title reads round trip, frames and bytes a second, and the total
+     received. */
   var VIEWER = 'mac/novnc/vnc.html?path=%2Fvnc%2Fvnc&autoconnect=true&resize=scale&reconnect=true';
-  var WIN_POLL_MS = 2000;
+  // noVNC's quality, always on the URL so its own saved setting never applies.
+  // 6 is lossless at the Mac's pace; under 6 mac/relay caps the frame rate
+  // and sends photo and video areas as JPEG.
+  function viewer() { return VIEWER + '&quality=' + (lsGet(DATA, 'full') === 'saver' ? 4 : 6); }
   // CHECK_MS paces the layout and cursor checks; frames copy on noVNC's draws
   var TAP_MS = 300, TAP_PX = 30, CHECK_MS = 100;
+  // out of sight this long, the session is dropped until the viewer is back
+  var PARK_MS = 20000;
   // pad: framebuffer px per finger px, times finger speed up to PAD_ACCEL.
   // Calibration knobs, tune on the phone.
   var PAD_GAIN = 2.5, PAD_ACCEL = 3, PAD_TAP_PX = 10, SCROLL_PX = 12;
-  // per device: 'full' | 'auto' | 1 | 2, 'all' | a display name, on | off
-  var RENDER = 'atlas.mac.render', SCREEN = 'atlas.mac.screen', ON = 'atlas.mac.on';
+  // per device: 'full' | 'auto' | 1 | 2, 'all' | a display name, on | off,
+  // 'full' | 'saver'
+  var RENDER = 'atlas.mac.render', SCREEN = 'atlas.mac.screen', ON = 'atlas.mac.on',
+      DATA = 'atlas.mac.data';
 
-  // /displays (points, main display at 0,0) as framebuffer rects. geo maps a
-  // point to the framebuffer: (x - x0) * k. null when the displays do not
-  // add up to this framebuffer — a display came or went since the read.
+  // /displays (points, main display at 0,0) as framebuffer rects. null when
+  // the displays do not add up to this framebuffer — a display came or went
+  // since the read.
   function toLayout(ds, s) {
     if (!ds || !ds.length) return null;
     var x0 = Math.min.apply(null, ds.map(function (d) { return d.x; }));
@@ -340,13 +383,13 @@
     var k = s.width / (x1 - x0);
     if (Math.abs((y1 - y0) * k - s.height) > 2) return null;
     var seen = {};
-    return { geo: { x0: x0, y0: y0, k: k }, rects: ds.map(function (d) {
+    return ds.map(function (d) {
       var name = d.name, n = 2;
       while (seen[name]) name = d.name + ' ' + n++;
       seen[name] = 1;
       return { name: name, x: Math.round((d.x - x0) * k), y: Math.round((d.y - y0) * k),
                w: Math.round(d.w * k), h: Math.round(d.h * k) };
-    }) };
+    });
   }
 
   // Builds a viewer at the end of host.
@@ -354,7 +397,7 @@
     var box = document.createElement('div');
     box.className = 'vnc';
     var f = document.createElement('iframe');
-    f.src = VIEWER;
+    f.src = viewer();
     f.setAttribute('allow', 'clipboard-read; clipboard-write');
     var stack = document.createElement('div');
     stack.className = 'vnc-stack';
@@ -385,12 +428,12 @@
     // dirty: what noVNC drew since the last copy — false, true for all of
     // it, or a {l,t,r,b} rect in framebuffer pixels. seen: framebuffer size last read
     var views = [], shown = '', seen = null, lastCheck = 0, lastTap = null, pos = null, dirty = false;
-    var layout = [], geo = null;
+    var layout = [];
 
     box.onlayout = null;     // (layout) on every framebuffer size change
-    box.win = null;          // a window's frame in points: shown alone, cropped
     box.rerender = function () { if (views.length) size(); };
-    box.reload = function () { unstack(); seen = null; f.src = VIEWER; };
+    box.reload = function () { unstack(); seen = null; f.src = viewer(); };
+    box.net = { bytes: 0, frames: 0 };
     box.full = full;
     // noVNC's own touch keyboard: its button focuses a textarea in the frame
     box.keyboard = function () {
@@ -762,28 +805,15 @@
       views.forEach(function (v) { copy(s, v, d); });
     }
 
-    // A window frame as a framebuffer rect, clipped to it; null when nothing
-    // of the window is on a display.
-    function crop(w, s) {
-      if (!geo) return null;
-      var x = Math.max(0, Math.round((w.x - geo.x0) * geo.k));
-      var y = Math.max(0, Math.round((w.y - geo.y0) * geo.k));
-      var r = Math.min(s.width, Math.round((w.x + w.w - geo.x0) * geo.k)) - x;
-      var b = Math.min(s.height, Math.round((w.y + w.h - geo.y0) * geo.k)) - y;
-      return r > 0 && b > 0 ? { name: 'window', x: x, y: y, w: r, h: b } : null;
-    }
-
     // A new framebuffer size: one screen until /displays answers.
     function relayout(key, s) {
-      geo = null;
       layout = key ? [{ name: 'screen', x: 0, y: 0, w: s.width, h: s.height }] : [];
       if (box.onlayout) box.onlayout(layout);
       if (!key) return;
       getJSON(AGENT + '/displays').then(function (d) {
         var l = seen === key && toLayout(d.displays, s);
         if (!l) return;
-        geo = l.geo;
-        layout = l.rects;
+        layout = l;
         shown = '';
         if (box.onlayout) box.onlayout(layout);
       }).catch(function () {});
@@ -798,9 +828,7 @@
       var sel = lsGet(SCREEN, 'all');
       var pick = layout.filter(function (r) { return sel === 'all' || r.name === sel; });
       if (!pick.length) pick = layout;    // the saved screen is not connected
-      var win = layout.length && box.win && crop(box.win, s);
-      if (win) pick = [win];
-      var use = pick.length && (innerHeight > innerWidth || pick.length < layout.length || win);
+      var use = pick.length && (innerHeight > innerWidth || pick.length < layout.length);
       if (!use) {
         if (shown) unstack();
         fit(s);
@@ -827,7 +855,39 @@
     // Not stacked (landscape, every screen showing): the gestures are read
     // inside the same-origin viewer. A desktop double-click toggles only on the
     // black margin, never the screen, which the remote session needs.
+    // Page hidden or the card not shown: after PARK_MS the frame goes blank,
+    // which closes the session; the Mac sends nothing to a viewer nobody sees.
+    var away = 0, parked = false;
+    function park() {
+      if (!box.isConnected) return clearInterval(parker);
+      if (!document.hidden && box.getClientRects().length) {
+        away = 0;
+        if (parked) { parked = false; box.reload(); }
+      } else if (!away) {
+        away = Date.now();
+      } else if (!parked && Date.now() - away > PARK_MS) {
+        parked = true; unstack(); seen = null; f.src = 'about:blank';
+      }
+    }
+    var parker = setInterval(park, 1000);
+    document.addEventListener('visibilitychange', park);
+
     f.addEventListener('load', function () {
+      // noVNC's socket is unreachable, so its prototype's send() is wrapped:
+      // the first call hands over the socket to count what arrives, and each
+      // FramebufferUpdateRequest (type 3) is one frame asked for
+      var W = f.contentWindow && f.contentWindow.WebSocket;
+      if (W && !W.prototype.atlasSend) {
+        var send = W.prototype.atlasSend = W.prototype.send, socks = new WeakSet();
+        W.prototype.send = function (data) {
+          if (!socks.has(this)) {
+            socks.add(this);
+            this.addEventListener('message', function (e) { box.net.bytes += e.data.byteLength || 0; });
+          }
+          if (data && data.byteLength && new Uint8Array(data.buffer || data, data.byteOffset || 0, 1)[0] === 3) box.net.frames++;
+          return send.call(this, data);
+        };
+      }
       var d = f.contentDocument;
       if (!d) return;
       d.addEventListener('touchend', function (e) {
@@ -844,7 +904,8 @@
   // The screen card: toolbar over the viewer while the switch is on.
   function screenCard(card) {
     var sw = card.querySelector('h2 .sw');
-    var bar = null, box = null, extra = null, into = null, layout = [];
+    var note = card.querySelector('h2 .note'), label = note.textContent;
+    var bar = null, box = null, extra = null, into = null, layout = [], reader = 0;
 
     function button(text, title, fn) {
       var b = document.createElement('button');
@@ -873,65 +934,7 @@
       into.appendChild(g);
     }
     function win(d) {
-      fetch(AGENT + '/win?do=' + d + (winId && d !== 'screen' ? '&id=' + winId : ''),
-        { method: 'POST', signal: giveUp() });
-    }
-    // One window alone: the picker lists every window aerospace manages, the
-    // frame is re-read while one is picked so a move or resize follows it.
-    // A window on a hidden workspace has no picture until it is on screen:
-    // picking it sends it to the main display first, as `main` does.
-    // The bar is redrawn only when winId changes: rebuilding it would close
-    // a picker that is open.
-    var wins = [], winId = 0, winT = 0, sel = null;
-    function readWins() {
-      return getJSON(AGENT + '/windows').then(function (d) {
-        wins = d.windows;
-        var w = wins.filter(function (x) { return x.id === winId; })[0];
-        if (!w && winId) { winId = 0; clearInterval(winT); draw(); }
-        if (box) box.win = w && w.shown && w.w ? w : null;
-        fill();
-        return w;
-      }).catch(function () {});
-    }
-    function toMain(id) {
-      return fetch(AGENT + '/tomain?id=' + id, { method: 'POST', signal: giveUp() })
-        .then(function () { return new Promise(function (ok) { setTimeout(ok, 300); }); })
-        .then(readWins);
-    }
-    function pickWin(id) {
-      winId = +id;
-      clearInterval(winT);
-      box.win = null;
-      if (!winId) return;
-      winT = setInterval(function () {
-        if (!box || !box.isConnected) clearInterval(winT); else if (!document.hidden) readWins();
-      }, WIN_POLL_MS);
-      readWins().then(function (w) { if (w && !w.shown) toMain(w.id); });
-    }
-    function fill() {
-      // frames move every poll; the options only when a window comes, goes or
-      // is renamed, and touching them is what would close an open picker
-      var names = wins.map(function (w) { return [w.id, w.app, w.title, w.shown]; }).join();
-      if (!sel || sel.dataset.names === names) return;
-      sel.dataset.names = names;
-      sel.innerHTML = '<option value="0">whole screen</option>';
-      wins.forEach(function (w) {
-        var o = document.createElement('option');
-        o.value = w.id;
-        o.textContent = w.app + (w.title && w.title !== w.app ? ' — ' + w.title.slice(0, 24) : '') +
-          (w.shown ? '' : ' · ' + w.ws);
-        sel.appendChild(o);
-      });
-      sel.value = winId;
-    }
-    function winSelect() {
-      sel = document.createElement('select');
-      sel.className = 'hbtn';
-      sel.title = 'show one window alone';
-      sel.addEventListener('focus', function () { if (!winId) readWins(); });
-      sel.addEventListener('change', function () { pickWin(sel.value); draw(); });
-      fill();
-      return sel;
+      fetch(AGENT + '/win?do=' + d, { method: 'POST', signal: giveUp() });
     }
 
     // The bar holds only keyboard and fullscreen, so it never wraps; every
@@ -939,27 +942,23 @@
     function draw() {
       bar.textContent = '';
       extra.textContent = '';
-      sel = null;
       into = bar;
       bar.appendChild(button('keyboard', 'type on the Mac', box.keyboard));
       bar.appendChild(button('fullscreen', 'double-tap the screen to leave', function () { box.full(true); }));
       // the stacked view sizes itself from where the bar ends
       box.rerender();
       into = extra;
-      if (layout.length) {
-        extra.appendChild(winSelect());
-        if (winId) extra.appendChild(button('to main', 'move this window to the main display',
-          function () { toMain(winId); }));
-      }
-      if (layout.length > 1 && !winId) {
+      if (layout.length > 1) {
         group(SCREEN, 'all', 'screens shown', [['all', 'all']].concat(
           layout.map(function (r) { return [r.name, r.name]; })));
       }
       extra.appendChild(button('reconnect', 'drop the session and connect again', box.reload));
       group(RENDER, 'auto', 'pixels per CSS pixel in the stacked view',
         [['full', 'full'], ['auto', 'auto'], [1, '1×'], [2, '2×']], box.rerender);
-      // aerospace's window commands, on the picked window or else the focused one
-      var who = winId ? 'this' : 'the focused';
+      group(DATA, 'full', 'saver: fewer frames, photos and video as JPEG; text stays sharp',
+        [['full', 'full data'], ['saver', 'data saver']], box.reload);
+      // aerospace's window commands, on the focused window
+      var who = 'the focused';
       seg([['float', 'float', 'float or tile ' + who + ' window'],
            ['split', 'split', 'flip the split of ' + who + ' window'],
            ['accordion', 'stack', 'accordion ' + who + ' window'],
@@ -977,13 +976,36 @@
       extra = document.createElement('div');
       extra.className = 'vnc-more';
       card.appendChild(extra);
-      // the picker and screen group need the layout, so the bar waits on it
-      box.onlayout = function (l) { layout = l; draw(); if (l.length) readWins(); };
+      // the screen group needs the layout, so the bar waits on it
+      box.onlayout = function (l) { layout = l; draw(); };
       draw();
+      readout();
+    }
+    // title readout: round trip to the page's host, frames and bytes per
+    // second, and the total since the viewer came on
+    function readout() {
+      var rtt = null, last = { bytes: 0, frames: 0 }, lastT = 0;
+      function ping() {
+        var t = performance.now();
+        fetch(VIEWER.split('?')[0], { method: 'HEAD', cache: 'no-store' })
+          .then(function () { rtt = Math.round(performance.now() - t); }, function () { rtt = null; });
+      }
+      reader = setInterval(function () {
+        if (document.hidden || !card.getClientRects().length) return;
+        var now = performance.now(), n = box.net, dt = (now - lastT) / 1000;
+        if (lastT && dt < 5) {
+          note.textContent = (rtt == null ? '' : rtt + ' ms · ') +
+            Math.round((n.frames - last.frames) / dt) + ' fps · ' +
+            Math.round((n.bytes - last.bytes) / dt / 1024) + ' KB/s · ' +
+            (n.bytes / 1048576).toFixed(1) + ' MB';
+        }
+        if (Math.floor(now / 3000) !== Math.floor(lastT / 3000)) ping();
+        last = { bytes: n.bytes, frames: n.frames }; lastT = now;
+      }, 1000);
     }
     function off() {
-      clearInterval(winT);
-      winId = 0;
+      clearInterval(reader);
+      note.textContent = label;
       if (box) box.remove();
       if (bar) bar.remove();
       if (extra) extra.remove();

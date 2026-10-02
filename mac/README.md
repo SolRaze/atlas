@@ -3,9 +3,9 @@ mac kit
 opt-in | a Mac's screen, windows, workspaces and apps on the page | phone-first
 
 what it is
-- screen/ noVNC over Screen Sharing | trackpad pad, left middle right buttons, scroll strip | displays stacked upright | one window alone | double-tap full screen | under it: render density, float split stack max, send to screen ◂ ▸, focus ⇆
+- screen/ noVNC over Screen Sharing | trackpad pad, left middle right buttons, scroll strip | displays stacked upright | double-tap full screen | title: rtt fps KB/s MB | drops the session 20 s out of sight | under it: render density, full data or data saver, float split stack max, send to screen ◂ ▸, focus ⇆
 - windows/ every workspace as a chip, active and inactive | tap switches | every window grouped by workspace | focus, move, main, close
-- apps/ every `.app` as an icon | running bright, stopped dim | most used first | tap opens | pick one, send its windows to a workspace
+- apps/ every `.app` as an icon | running bright, stopped dim | most used first | tap picks, `open` in the title starts it | picked running app: send its windows to a workspace, bring forward, quit, force quit
 
 needs
 - the Mac on a tailnet | the agent is reached at `https://<mac>.<tailnet>.ts.net/mac`
@@ -16,7 +16,7 @@ needs
 files
 - agent/ Mac side | python 3 stdlib | `--selftest`
 - agent.plist/ launchd template for the agent
-- relay/ logs in to Screen Sharing, hands noVNC a session with no prompt | `--selftest` needs `cryptography`
+- relay/ logs in to Screen Sharing, hands noVNC a session with no prompt | forwards only tiles that changed | data saver: fewer frames, busy areas as JPEG | needs `cryptography numpy pillow`, so does `--selftest`
 - compose.yml/ override | adds `novnc` + `relay`, mounts the nginx config and `web/`
 - nginx.conf/ page + `/mac/` + the `/vnc/vnc` websocket
 - get-novnc/ fetches noVNC `v1.6.0` into `web/novnc`
