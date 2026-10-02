@@ -681,16 +681,16 @@
       f.style.width = f.style.height = '';
     }
 
-    // In the card each display fills the width. Sideways full screen: the
-    // stack fits the room. Full upright: it fills the room's height and runs
-    // as wide as that makes it, panned by follow() after the pointer.
+    // The card and sideways full screen: the stack fits the room, no wider
+    // than the width. Full upright: it fills the room's height and runs as
+    // wide as that makes it, panned by follow() after the pointer.
     function size() {
       var W = across();
       var hs = views.map(function (v) { return W * v.r.h / v.r.w; });
       var total = hs.reduce(function (a, b) { return a + b; }, 0) + 2 * (views.length - 1);
       var fit = (room() - under()) / total;
-      var k = !box.classList.contains('full') ? 1
-        : box.classList.contains('side') ? Math.max(0.2, Math.min(1, fit)) : Math.max(0.2, fit);
+      // only full upright runs wider than the phone; elsewhere the stack fits the room
+      var k = !box.classList.contains('full') || box.classList.contains('side') ? Math.max(0.2, Math.min(1, fit)) : Math.max(0.2, fit);
       var dpr = lsGet(RENDER, 'auto');
       if (dpr === 'full') dpr = Infinity;
       if (dpr === 'auto') dpr = window.devicePixelRatio || 1;
@@ -934,28 +934,28 @@
       return sel;
     }
 
-    // The bar over the viewer is one row; render density and the window
-    // binds sit under it, so they take no height from the screen.
+    // The bar holds only keyboard and fullscreen, so it never wraps; every
+    // other control is the card under the viewer and takes no screen height.
     function draw() {
       bar.textContent = '';
+      extra.textContent = '';
       sel = null;
       into = bar;
+      bar.appendChild(button('keyboard', 'type on the Mac', box.keyboard));
+      bar.appendChild(button('fullscreen', 'double-tap the screen to leave', function () { box.full(true); }));
+      // the stacked view sizes itself from where the bar ends
+      box.rerender();
+      into = extra;
       if (layout.length) {
-        bar.appendChild(winSelect());
-        if (winId) bar.appendChild(button('to main', 'move this window to the main display',
+        extra.appendChild(winSelect());
+        if (winId) extra.appendChild(button('to main', 'move this window to the main display',
           function () { toMain(winId); }));
       }
       if (layout.length > 1 && !winId) {
         group(SCREEN, 'all', 'screens shown', [['all', 'all']].concat(
           layout.map(function (r) { return [r.name, r.name]; })));
       }
-      bar.appendChild(button('reconnect', 'drop the session and connect again', box.reload));
-      bar.appendChild(button('keyboard', 'type on the Mac', box.keyboard));
-      bar.appendChild(button('fullscreen', 'double-tap the screen to leave', function () { box.full(true); }));
-      // the stacked view sizes itself from where the bar ends
-      box.rerender();
-      extra.textContent = '';
-      into = extra;
+      extra.appendChild(button('reconnect', 'drop the session and connect again', box.reload));
       group(RENDER, 'auto', 'pixels per CSS pixel in the stacked view',
         [['full', 'full'], ['auto', 'auto'], [1, '1×'], [2, '2×']], box.rerender);
       // aerospace's window commands, on the picked window or else the focused one
