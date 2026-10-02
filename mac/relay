@@ -4,16 +4,28 @@
 noVNC in the `novnc` container connects here instead of to the Mac. This side
 logs in to the Mac's Screen Sharing with the legacy VNC password, then hands
 the browser a session that is already authenticated (security type None).
-From there it only copies bytes: ClientInit, ServerInit and every frame pass
-through as-is.
+
+Screen Sharing resends a whole window on any change inside it, megabytes per
+frame, at whatever offset the window sits. The relay decodes every ZRLE tile
+against a copy of the browser's framebuffer and forwards only tiles whose
+pixels differ, recompressed on its own zlib stream. That is
+why it parses both directions: SetEncodings is cut down to the encodings it can
+walk, and any message it cannot parse closes the session (noVNC reconnects)
+rather than desyncing the two zlib streams.
+
+noVNC's quality setting (?quality= on its URL, pseudo-encoding -32 + q) is the
+data saver. Below 6 the relay holds each incremental request so updates arrive
+at most q + 1 times a second, changes in between coalescing into one frame, and
+sends busy areas (photos, video) as Tight JPEG at JPEG_QUALITY[q]. Text and
+flat areas stay lossless ZRLE either way.
 
   browser -> atlas /vnc/vnc -> novnc (websockify) -> relay:5901 (this)
           -> MAC_HOST:5900 (Screen Sharing, legacy VNC auth)
 
 Runs as the `relay` service in mac/compose.yml, reachable only on the compose
-network. The password is read from PASSWORD_FILE, never from the request, a
-URL or the page. The upstream is fixed at start; nothing a client sends picks
-a host.
+network; needs cryptography, numpy and pillow. The password is read from
+PASSWORD_FILE, never from the request, a URL or the page. The upstream is fixed
+at start; nothing a client sends picks a host.
 
   MAC_HOST        the Mac's tailnet address, required
   MAC_PORT        5900
@@ -21,19 +33,35 @@ a host.
   PASSWORD_FILE   /run/secrets/vnc
 
   relay              serve
-  relay --selftest   DES vectors + a full handshake against a fake Mac
+  relay --selftest   DES vectors, a full handshake, tile dedupe and the data
+                     saver against a fake Mac
 """
+import io
 import os
 import socket
 import socketserver
 import struct
 import sys
 import threading
+import time
+import zlib
+
+import numpy as np
 
 BIND = ("0.0.0.0", int(os.environ.get("RELAY_PORT", "5901")))
 MAC = (os.environ.get("MAC_HOST", ""), int(os.environ.get("MAC_PORT", "5900")))
 PASSWORD_FILE = os.environ.get("PASSWORD_FILE", "/run/secrets/vnc")
 VNC_AUTH, NONE = 2, 1
+TILE = 64
+# Encodings the dedupe can walk; the browser's SetEncodings is cut to these.
+# ZRLE 16, Raw 0, CopyRect 1, Cursor -239, DesktopSize -223, LastRect -224.
+ENCODINGS = (16, 0, 1, -239, -223, -224)
+QUALITY0, FULL_QUALITY, TIGHT = -32, 6, 7
+# noVNC quality level -> JPEG quality, TigerVNC's table
+JPEG_QUALITY = (15, 29, 41, 42, 62, 77, 79, 86, 92, 100)
+# a run goes out as JPEG when its ZRLE bytes exceed this per pixel: palette
+# and run-length tiles (text, flat UI) sit well under 1, raw tiles near 3
+JPEG_BYTES_PER_PX = 1.0
 
 
 def des_ecb(key, block):
@@ -91,15 +119,260 @@ def greet_client(sock):
     sock.sendall(struct.pack(">I", 0))
 
 
-def pipe(a, b):
+class Bad(Exception):
+    pass
+
+
+def tile(buf, o, tw, th, cp):
+    """Decode the ZRLE tile at o: (offset past it, th x tw x cp pixels)."""
+    sub = int(buf[o])
+    o += 1
+    n = tw * th
+    if sub == 0:
+        return o + n * cp, buf[o:o + n * cp].reshape(th, tw, cp)
+    if sub == 1:
+        return o + cp, np.broadcast_to(buf[o:o + cp], (th, tw, cp))
+    if sub <= 16:
+        pal = buf[o:o + sub * cp].reshape(sub, cp)
+        o += sub * cp
+        bits = 1 if sub == 2 else 2 if sub <= 4 else 4
+        rb = (tw * bits + 7) // 8
+        b = np.unpackbits(buf[o:o + th * rb].reshape(th, rb), axis=1)
+        idx = b.reshape(th, rb * 8 // bits, bits) @ (1 << np.arange(bits - 1, -1, -1))
+        return o + th * rb, pal[idx[:, :tw]]
+    if sub == 128 or sub >= 130:
+        if sub > 128:
+            pal = buf[o:o + (sub - 128) * cp].reshape(sub - 128, cp)
+            o += (sub - 128) * cp
+        else:
+            pal = None
+        what, runs = [], []
+        while n > 0:
+            if pal is None:
+                what.append(o)
+                o += cp
+                run = True
+            else:
+                i = int(buf[o])
+                what.append(i & 127)
+                run = i & 128
+                o += 1
+            k = 1
+            if run:
+                while buf[o] == 255:
+                    k += 255
+                    o += 1
+                k += int(buf[o])
+                o += 1
+            runs.append(k)
+            n -= k
+        if n:
+            raise Bad("zrle run past tile")
+        idx = np.repeat(what, runs)
+        px = pal[idx] if pal is not None else buf[idx[:, None] + np.arange(cp)]
+        return o, px.reshape(th, tw, cp)
+    raise Bad(f"zrle subencoding {sub}")
+
+
+class Session:
+    """RFB message state shared by both directions of one browser session."""
+
+    def __init__(self, server_init, send_up):
+        self.send_up = send_up       # thread-safe write to the Mac
+        self.gap, self.last = 0, 0   # data saver: min seconds between requests
+        self.jpeg = None             # data saver: JPEG quality, when the browser takes Tight
+        self.size = struct.unpack(">HH", server_init[:4])
+        self.pf(server_init[4:20])
+        self.inflate = zlib.decompressobj()
+        self.deflate = zlib.compressobj(6)
+        self.fb = None               # what the browser shows, as CPIXELs
+        # updates still to send whole: one already in flight may answer the
+        # browser's full request before the server sees it
+        self.fresh = 0
+
+    def pf(self, f):
+        bpp, depth, big, true, *_, rs, gs, bs = struct.unpack(">BBBBHHHBBB", f[:13])
+        # CPIXEL bytes in R, G, B order, as JPEG wants them
+        self.rgb = bpp == 32 and depth <= 24 and true and not big and (rs, gs, bs) == (0, 8, 16)
+        self.bpp = bpp // 8
+        self.cp = 3 if bpp == 32 and depth <= 24 and true else self.bpp
+        # a Raw pixel's CPIXEL bytes: the low three, wherever the format keeps them
+        self.low = slice(1, 4) if big and self.cp == 3 else slice(0, self.cp)
+        self.fb = None
+
+    def client(self, r):
+        """One browser message, filtered, as bytes for the Mac."""
+        t = r(1)
+        k = t[0]
+        if k == 0:                                   # SetPixelFormat
+            body = r(19)
+            self.pf(body[3:19])
+            return t + body
+        if k == 2:                                   # SetEncodings
+            n = struct.unpack(">xH", r(3))[0]
+            encs = struct.unpack(f">{n}i", r(4 * n))
+            keep = [e for e in encs if e in ENCODINGS]
+            q = [e - QUALITY0 for e in encs if 0 <= e - QUALITY0 <= 9]
+            saver = q and q[0] < FULL_QUALITY
+            self.gap = 1 / (q[0] + 1) if saver else 0
+            self.jpeg = JPEG_QUALITY[q[0]] if saver and TIGHT in encs else None
+            return struct.pack(f">BxH{len(keep)}i", 2, len(keep), *keep)
+        if k == 3:                                   # FramebufferUpdateRequest
+            body = r(9)
+            if not body[0]:
+                self.fresh = 2
+            elif self.gap:
+                wait = self.last + self.gap - time.monotonic()
+                if wait > 0:
+                    # keys and pointer keep flowing; only this request waits
+                    threading.Timer(wait, self.request, (t + body,)).start()
+                    return b""
+            self.last = time.monotonic()
+            return t + body
+        if k == 4:                                   # KeyEvent
+            return t + r(7)
+        if k == 5:                                   # PointerEvent
+            return t + r(5)
+        if k == 6:                                   # ClientCutText
+            hdr = r(7)
+            return t + hdr + r(abs(struct.unpack(">i", hdr[3:])[0]))
+        raise Bad(f"client message {k}")
+
+    def request(self, msg):
+        self.last = time.monotonic()
+        try:
+            self.send_up(msg)
+        except OSError:
+            pass
+
+    def server(self, r):
+        """One Mac message, unchanged tiles dropped, as bytes for the browser."""
+        t = r(1)
+        k = t[0]
+        if k == 0:
+            return self.update(r)
+        if k == 1:                                   # SetColourMapEntries
+            hdr = r(5)
+            return t + hdr + r(6 * struct.unpack(">H", hdr[3:])[0])
+        if k == 2:                                   # Bell
+            return t
+        if k == 3:                                   # ServerCutText
+            hdr = r(7)
+            return t + hdr + r(abs(struct.unpack(">i", hdr[3:])[0]))
+        raise Bad(f"server message {k}")
+
+    def update(self, r):
+        whole = self.fresh > 0
+        if whole:
+            self.fresh -= 1
+        if self.fb is None:
+            w, h = self.size
+            self.fb = np.zeros((h, w, self.cp), np.uint8)
+        n = struct.unpack(">xH", r(3))[0]
+        out, i = [], 0
+        while n == 65535 or i < n:
+            i += 1
+            hdr = r(12)
+            x, y, w, h, enc = struct.unpack(">HHHHi", hdr)
+            if enc == -224:                          # LastRect
+                break
+            if enc == 16:
+                d = self.inflate.decompress(r(struct.unpack(">I", r(4))[0]))
+                self.zrle(out, d, x, y, w, h, whole)
+                continue
+            if enc == 0:
+                body = r(w * h * self.bpp)
+                px = np.frombuffer(body, np.uint8).reshape(h, w, self.bpp)
+                self.fb[y:y + h, x:x + w] = px[:, :, self.low]
+            elif enc == 1:
+                body = r(4)
+                sx, sy = struct.unpack(">HH", body)
+                self.fb[y:y + h, x:x + w] = self.fb[sy:sy + h, sx:sx + w].copy()
+            elif enc == -239:
+                body = r(w * h * self.bpp + (w + 7) // 8 * h)
+            elif enc == -223:
+                body = b""
+                self.size = (w, h)
+                self.fb = np.zeros((h, w, self.cp), np.uint8)
+            else:
+                raise Bad(f"encoding {enc}")
+            out.append(hdr + body)
+        return struct.pack(">BxH", 0, len(out)) + b"".join(out)
+
+    def zrle(self, out, d, x, y, w, h, whole):
+        """Forward the tiles whose pixels differ from what the browser shows,
+        joined into runs along each tile row."""
+        buf = np.frombuffer(d, np.uint8)
+        runs, o = [], 0
+        for ty in range(y, y + h, TILE):
+            th = min(TILE, y + h - ty)
+            run = None
+            for tx in range(x, x + w, TILE):
+                tw = min(TILE, x + w - tx)
+                e, px = tile(buf, o, tw, th, self.cp)
+                shown = self.fb[ty:ty + th, tx:tx + tw]
+                if not whole and np.array_equal(shown, px):
+                    run = None
+                else:
+                    shown[...] = px
+                    if run:
+                        run[2] += tw
+                        run[5] = e
+                    else:
+                        run = [tx, ty, tw, th, o, e]
+                        runs.append(run)
+                o = e
+        if o != len(d):
+            raise Bad("zrle rect length")
+        for rx, ry, rw, rh, s, e in runs:
+            if self.jpeg and self.rgb and e - s > JPEG_BYTES_PER_PX * rw * rh:
+                out.append(self.tight(rx, ry, rw, rh))
+                continue
+            z = self.deflate.compress(d[s:e]) + self.deflate.flush(zlib.Z_SYNC_FLUSH)
+            out.append(struct.pack(">HHHHiI", rx, ry, rw, rh, 16, len(z)) + z)
+
+
+    def tight(self, x, y, w, h):
+        """x,y,w,h from the shadow framebuffer as one Tight JPEG rect."""
+        from PIL import Image
+        jpg = io.BytesIO()
+        Image.fromarray(self.fb[y:y + h, x:x + w]).save(jpg, "JPEG", quality=self.jpeg)
+        data = jpg.getvalue()
+        return struct.pack(">HHHHiB", x, y, w, h, TIGHT, 0x90) + compact(len(data)) + data
+
+
+def compact(n):
+    """Tight's length: 7 bits a byte with a continue bit, the third byte 8 bits."""
+    if n < 0x80:
+        return bytes([n])
+    if n < 0x4000:
+        return bytes([n & 0x7F | 0x80, n >> 7])
+    if n < 0x400000:
+        return bytes([n & 0x7F | 0x80, n >> 7 & 0x7F | 0x80, n >> 14])
+    raise Bad("tight rect over 4 MB")
+
+
+def reader(sock):
+    f = sock.makefile("rb")
+
+    def read(n):
+        b = f.read(n)
+        if len(b) != n:
+            raise EOFError
+        return b
+    return read
+
+
+def pipe(read, step, send, a, b):
     try:
         while True:
-            data = a.recv(65536)
-            if not data:
-                break
-            b.sendall(data)
-    except OSError:
+            data = step(read)
+            if data:
+                send(data)
+    except EOFError:
         pass
+    except (OSError, Bad, zlib.error, IndexError, ValueError, struct.error) as e:
+        print(f"relay: closing: {e!r}", file=sys.stderr, flush=True)
     finally:
         for s in (a, b):
             try:
@@ -114,14 +387,25 @@ def relay(client, upstream_addr, password):
         login_upstream(up, password)
         client.settimeout(10)
         greet_client(client)
+        up.sendall(recv_exact(client, 1))            # ClientInit
+        init = recv_exact(up, 24)
+        init += recv_exact(up, struct.unpack(">I", init[20:])[0])
+        client.sendall(init)                         # ServerInit
     except Exception:
         up.close()
         raise
     up.settimeout(None)
     client.settimeout(None)
-    t = threading.Thread(target=pipe, args=(up, client), daemon=True)
+    lock = threading.Lock()
+
+    def send_up(data):
+        with lock:
+            up.sendall(data)
+    s = Session(init, send_up)
+    t = threading.Thread(target=pipe, args=(reader(up), s.server, client.sendall, up, client),
+                         daemon=True)
     t.start()
-    pipe(client, up)
+    pipe(reader(client), s.client, send_up, client, up)
     t.join()
     up.close()
 
@@ -144,9 +428,18 @@ def selftest():
     k = bytes.fromhex("133457799BBCDFF1")
     assert des_ecb(k, bytes.fromhex("0123456789ABCDEF")).hex() == "85e813540f0ab405"
     assert vnc_key("a")[:2] == bytes([0x86, 0x00])
+    assert compact(300) == b"\xac\x02" and compact(0x4000) == b"\x80\x80\x01"
 
     password, challenge = "hunter2", os.urandom(16)
     expect = des_ecb(vnc_key(password), challenge)
+    # 32bpp depth 24 true colour, 128x64: one ZRLE rect of two solid tiles
+    init = struct.pack(">HHBBBBHHHBBB3xI", 128, 64, 32, 24, 0, 1, 255, 255, 255, 16, 8, 0, 0)
+    tiles, zo = b"\x01\x10\x20\x30" * 2, zlib.compressobj()
+    frames = b""
+    for _ in range(2):          # one zlib stream across rects, as the Mac sends
+        z = zo.compress(tiles) + zo.flush(zlib.Z_SYNC_FLUSH)
+        frames += struct.pack(">BxHHHHHiI", 0, 1, 0, 0, 128, 64, 16, len(z)) + z
+    got = []
     mac = socket.socket()
     mac.bind(("127.0.0.1", 0))
     mac.listen(1)
@@ -160,8 +453,15 @@ def selftest():
         c.sendall(challenge)
         ok = recv_exact(c, 16) == expect
         c.sendall(struct.pack(">I", 0 if ok else 1))
-        if ok:
-            c.sendall(b"FRAME")
+        if not ok:
+            return c.close()
+        recv_exact(c, 1)
+        c.sendall(init)
+        got.append(recv_exact(c, 12))
+        c.sendall(frames)
+        for _ in range(2):
+            recv_exact(c, 10)
+            got.append(time.monotonic())
         c.close()
 
     threading.Thread(target=fake_mac, daemon=True).start()
@@ -173,8 +473,20 @@ def selftest():
     assert recv_exact(browser, 2) == bytes([1, NONE]), "client not offered None"
     browser.sendall(bytes([NONE]))
     assert recv_exact(browser, 4) == struct.pack(">I", 0)
-    assert recv_exact(browser, 5) == b"FRAME", "bytes not relayed after login"
-    print("selftest ok — DES vectors, upstream login, None handoff, relay")
+    browser.sendall(b"\x01")
+    assert recv_exact(browser, len(init)) == init, "ServerInit not relayed"
+    browser.sendall(struct.pack(">BxH4i", 2, 4, 7, 16, -239, QUALITY0 + 2))
+    assert recv_exact(browser, 4) == struct.pack(">BxH", 0, 1), "first frame lost"
+    rx, ry, rw, rh, enc, ln = struct.unpack(">HHHHiI", recv_exact(browser, 16))
+    assert (rw, rh, enc) == (128, 64, 16) and zlib.decompressobj().decompress(recv_exact(browser, ln)) == tiles
+    assert recv_exact(browser, 4) == struct.pack(">BxH", 0, 0), "unchanged tiles resent"
+    assert got[0] == struct.pack(">BxH2i", 2, 2, 16, -239), "SetEncodings not filtered"
+    browser.sendall(struct.pack(">BBHHHH", 3, 1, 0, 0, 128, 64) * 2)
+    deadline = time.monotonic() + 3
+    while len(got) < 3 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(got) == 3 and got[2] - got[1] > 0.3, "quality 2 did not cap at 3 updates a second"
+    print("selftest ok — DES vectors, upstream login, None handoff, tile dedupe, data saver")
     return 0
 
 

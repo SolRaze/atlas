@@ -19,7 +19,7 @@ services:
   relay:
     image: python:3-slim
     restart: unless-stopped
-    command: sh -c "pip install -q --root-user-action=ignore cryptography && exec python3 /relay"
+    command: sh -c "pip install -q --root-user-action=ignore cryptography numpy pillow && exec python3 /relay"
     environment:
       MAC_HOST: ${MAC_HOST:?set MAC_HOST to the Mac's tailnet address}
     volumes:
