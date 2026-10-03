@@ -318,6 +318,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(404, {"error": "no such route"})
 
     def do_POST(self):
+        # a browser sends Origin on every cross-origin POST and CORS does not
+        # stop a simple one from landing, so any other page could act here
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in ORIGINS:
+            return self.send_json(403, {"error": "origin not in ATLAS_ORIGINS"})
         path = self.route()
         names = [x["w"] for x in spaces()["list"]]
         if path == "/open":
