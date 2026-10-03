@@ -46,9 +46,10 @@ docker compose -f compose.yml -f mac/compose.yml logs relay   # "upstream reject
 gotchas
 - no auth on the agent | anyone on the tailnet can move and close windows | never publish it with `tailscale funnel`
 - the agent binds `127.0.0.1` | `tailscale serve` is the only way in
-- `ATLAS_ORIGINS` must match the page's origin exactly | wrong origin = cards read offline
+- `ATLAS_ORIGINS` must match the page's origin exactly | wrong origin = cards read offline | other origins' POSTs get 403
 - `mac/password` and `web/novnc/` are gitignored | the password never reaches the page or a url
 - the relay offers no password to the browser | whoever reaches the page drives the Mac | keep the page tailnet-only
+- the screen socket refuses an Origin whose host is not the request's Host | a proxy in front must pass Host through
 - Screen Sharing offers legacy auth only with the VNC password set | without it the relay logs "no legacy VNC auth"
 - MagicDNS names may not resolve inside containers | use the Mac's `100.x` address for `MAC_HOST` if the relay cannot find it
 - `mac.html` is the one partial carrying `<script>` and `<link>` | the kit stays out of `app.js`
