@@ -20,8 +20,10 @@
       env(safe-area-inset-bottom) env(safe-area-inset-left); }
   .vnc.full > iframe { height:calc(100% - var(--pad) - var(--btns)); }
   .vnc-padrow { display:flex; height:var(--pad); border-top:1px solid var(--line); }
-  .vnc-pad { flex:1; background:var(--panel-2);
+  .vnc-pad { flex:1; position:relative; background:var(--panel-2);
       touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  .vnc-rate { position:absolute; left:8px; right:8px; bottom:6px; text-align:right; font-size:11px; color:var(--mut);
+      pointer-events:none; font-variant-numeric:tabular-nums; }
   .vnc-btns { display:flex; height:var(--btns); gap:1px; background:var(--line); }
   .vnc-btns button { flex:1; background:var(--panel-2); color:var(--mut); border:0;
       font:inherit; font-size:11px; letter-spacing:.06em; text-transform:uppercase;

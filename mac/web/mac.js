@@ -405,6 +405,10 @@
     row.className = 'vnc-padrow';
     var pad = document.createElement('div');
     pad.className = 'vnc-pad';
+    // speed readout, shown on the pad so fullscreen keeps it; takes no taps
+    var rate = document.createElement('span');
+    rate.className = 'vnc-rate';
+    pad.appendChild(rate);
     var vs = document.createElement('div');
     vs.className = 'vnc-vscroll';
     vs.innerHTML = '<span>scroll</span>';
@@ -434,6 +438,7 @@
     box.rerender = function () { if (views.length) size(); };
     box.reload = function () { unstack(); seen = null; f.src = viewer(); };
     box.net = { bytes: 0, frames: 0 };
+    box.rate = rate;
     box.full = full;
     // noVNC's own touch keyboard: its button focuses a textarea in the frame
     box.keyboard = function () {
@@ -981,7 +986,7 @@
       draw();
       readout();
     }
-    // title readout: round trip to the page's host, frames and bytes per
+    // title and pad readout: round trip to the page's host, frames and bytes per
     // second, and the total since the viewer came on
     function readout() {
       var rtt = null, last = { bytes: 0, frames: 0 }, lastT = 0;
@@ -994,7 +999,7 @@
         if (document.hidden || !card.getClientRects().length) return;
         var now = performance.now(), n = box.net, dt = (now - lastT) / 1000;
         if (lastT && dt < 5) {
-          note.textContent = (rtt == null ? '' : rtt + ' ms · ') +
+          note.textContent = box.rate.textContent = (rtt == null ? '' : rtt + ' ms · ') +
             Math.round((n.frames - last.frames) / dt) + ' fps · ' +
             Math.round((n.bytes - last.bytes) / dt / 1024) + ' KB/s · ' +
             (n.bytes / 1048576).toFixed(1) + ' MB';
