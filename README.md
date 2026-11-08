@@ -95,3 +95,5 @@ gotchas
 - sites sending `X-Frame-Options` or `frame-ancestors` refuse the iframe | use the tab's `open ↗`
 - an https page cannot frame plain http services | mixed content, the browser blocks it
 - icon names carry `-v2` | iOS caches touch icons hard, rename to force a refresh
+
+license mit
